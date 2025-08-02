@@ -1,0 +1,37 @@
+{
+  "id": "4989654",
+  "name": "manpao",
+  "font_family": "iconfont",
+  "css_prefix_text": "icon-",
+  "description": "",
+  "glyphs": [
+    {
+      "icon_id": "1427",
+      "name": "公交",
+      "font_class": "gongjiao",
+      "unicode": "e600",
+      "unicode_decimal": 58880
+    },
+    {
+      "icon_id": "5648318",
+      "name": "跑步选中",
+      "font_class": "paobuxuanzhong",
+      "unicode": "e74a",
+      "unicode_decimal": 59210
+    },
+    {
+      "icon_id": "5961321",
+      "name": "AI",
+      "font_class": "wuguan",
+      "unicode": "ec5f",
+      "unicode_decimal": 60511
+    },
+    {
+      "icon_id": "29132722",
+      "name": "路径规划",
+      "font_class": "lujingguihua",
+      "unicode": "e601",
+      "unicode_decimal": 58881
+    }
+  ]
+}

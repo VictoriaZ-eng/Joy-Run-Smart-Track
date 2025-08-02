@@ -1,0 +1,14 @@
+*{
+  margin:0;
+  padding:0;
+  box-sizing: border-box;
+}
+#map{
+  width: 100vw;
+  height: 100vh;
+}
+/* src/assets/styles/global.css */
+.mapboxgl-ctrl,
+.l7-control {
+  z-index: 1000 !important;
+}
