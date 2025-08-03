@@ -43,8 +43,11 @@
         </el-col>
 
         <!-- 右侧：实时天气查询按钮 -->
-        <div class="weather">
+        <!-- <div class="weather">
           <el-button>实时天气查询</el-button>
+        </div> -->
+        <div class="weather">
+          <WeatherView />
         </div>
         <div class="rainbowicon">
           <img src="/src/assets/images/rainbow.png" alt="" />
@@ -64,6 +67,7 @@
 <script setup>
 import "@/assets/iconfont/iconfont.css";
 import { ref } from "vue";
+import WeatherView from '@/components/WeatherView.vue';
 
 const list = [
   { name: "慢跑路径规划", icon: "icon-lujingguihua", path: "/routeplan.vue" },
