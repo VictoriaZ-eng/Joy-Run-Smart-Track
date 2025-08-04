@@ -16,6 +16,8 @@ coverage
 
 /cypress/videos/
 /cypress/screenshots/
+/backend/temp/
+/backend/routes/__pycache__/
 
 # Editor directories and files
 .vscode/*
