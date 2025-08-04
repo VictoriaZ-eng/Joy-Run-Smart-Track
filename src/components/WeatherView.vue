@@ -5,7 +5,7 @@
          @mouseleave="hideWeatherDetails"
          @click="toggleWeatherDetails">
       <img :src="currentWeatherIcon" alt="天气图标" class="weather-icon" />
-      <span class="weather-city">杭州市</span>
+      <span class="weather-city">拱墅区</span>
       <span class="weather-greeting">{{ greetingMessage }}</span>
     </div>
     <div :class="['weather-details', { show: showDetails }]">
@@ -185,22 +185,23 @@ export default {
         let greeting = ''
 
         if (currentHour >= 5 && currentHour < 8) {
-        greeting = '清晨好'
+        greeting = ''
         } else if (currentHour >= 8 && currentHour < 12) {
-        greeting = '早上好'
+        greeting = ''
         } else if (currentHour >= 12 && currentHour < 14) {
-        greeting = '中午好'
+        greeting = ''
         } else if (currentHour >= 14 && currentHour < 18) {
-        greeting = '下午好'
+        greeting = ''
         } else if (currentHour >= 18 && currentHour < 20) {
-        greeting = '傍晚好'
+        greeting = ''
         } else if (currentHour >= 20 && currentHour < 23) {
-        greeting = '晚上好'
+        greeting = ''
         } else {
-        greeting = '深夜好'
+        greeting = ''
         }
 
-        return `${greeting}${this.currentWeather}`
+        // return `${greeting}${this.currentWeather}`
+        return `${greeting}`
     }
     },
     mounted () {

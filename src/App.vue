@@ -43,7 +43,7 @@ onMounted(() => {
 <style scoped>
 /* 确保地图容器有明确的高度 */
 #map {
-  width: 100%;
+  width: 100wh;
   height: 100vh; /* 全屏高度，可以根据需要调整 */
 }
 

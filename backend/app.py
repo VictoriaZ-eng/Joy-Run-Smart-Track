@@ -15,3 +15,5 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"天气数据更新失败: {e}")
     app.run(debug=True)
+
+# python backend/app.py
