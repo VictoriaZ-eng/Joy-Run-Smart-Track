@@ -23,7 +23,7 @@
           </div>
         </el-col>
 
-        <!-- 右侧：登录按钮 -->
+ 
        
       </el-row>
     </el-header>
@@ -34,8 +34,7 @@
         <!-- 中间：地图控件集合块 -->
         <el-col :span="16" class="map-controls">
           <div class="map-controls-container">
-            <!-- 这里可以放置地图控件 -->
-            地图控件集合块
+            <LocationSearch   />
             <div class="login">
               <el-button>登录</el-button>
             </div>
@@ -49,9 +48,7 @@
         <div class="weather">
           <WeatherView />
         </div>
-        <div class="rainbowicon">
-          <img src="/src/assets/images/rainbow.png" alt="" />
-        </div>
+   
         <div class="clockicon">
           <img src="/src/assets/images/shizhong.png" alt="" />
         </div>
@@ -59,6 +56,8 @@
           <p class="clock">{{ clock }}</p>
           <p class="date">{{ date }}</p>
         </div>
+
+
       </el-row>
     </el-main>
   </div>
@@ -68,21 +67,21 @@
 import "@/assets/iconfont/iconfont.css";
 import { ref } from "vue";
 import WeatherView from '@/components/WeatherView.vue';
+import LocationSearch from '@/components/LocationSearch.vue';
+import { useRouter } from 'vue-router';
 
+const router = useRouter(); // 获取路由实例
+const activeItem = ref('');
 const list = [
-  { name: "慢跑路径规划", icon: "icon-lujingguihua", path: "/routeplan.vue" },
+  { name: "慢跑路径规划", icon: "icon-lujingguihua", path: "/routeplan" },
   { name: "交通服务查询", icon: "icon-gongjiao", path: "/traffic_search" },
   { name: "赛事服务查询", icon: "icon-paobuxuanzhong", path: "/marathon" },
   { name: "AI健康助手", icon: "icon-wuguan", path: "/AI_search" },
 ];
 
-// 当前选中的导航项
-const activeItem = ref("");
-
-// 点击导航项时的处理逻辑
 const handleClick = (item) => {
   activeItem.value = item.name;
-  window.location.href = item.path;
+  router.push(item.path); // Vue Router 路由跳转
 };
 
 // 时间
@@ -197,7 +196,7 @@ function format(t) {
 
 .login {
   top: 20px;
-  right: 50px;
+  right: 1%;
   font-size: 30px;
 }
 
@@ -205,6 +204,7 @@ function format(t) {
   top: 120px;
   right: 50px;
   font-size: 20px;
+  height:60px;
 }
 
 /* 共享的悬停样式 */
@@ -227,23 +227,17 @@ function format(t) {
 }
 
 /* 图标定位 */
-.rainbowicon {
-  position: absolute;
-  top: 120px;
-  right: 9%;
-}
-
 .clockicon {
   position: absolute;
-  top: 120px;
-  right: 17%;
+  top: 30px;
+  right: 15%;
 }
 
 /* 时间显示 */
 .time {
   position: absolute;
-  right: 12%;
-  top: 120px;
+  right: 8%;
+  top: 30px;
   font-weight: bold;
   font-size: 20px;
   font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;
@@ -253,6 +247,8 @@ function format(t) {
 .clock {
   text-align: center;
 }
+
+
 
 /* 中间内容区域 */
 .main-content {
@@ -265,9 +261,13 @@ function format(t) {
   border-top: 2px solid #ccc;
   border-bottom: 1px solid #ccc;
   height: 65px;
+  width:100%;
   display: flex;
   justify-content: center;
   align-items: center;
-  box-shadow: 0 -4px 5px rgba(0, 0, 0, 0.1); /* 修复单位错误：dvi → px */
+  box-shadow: 0 -4px 5px rgba(0, 0, 0, 0.1); 
 }
+
+
+
 </style>

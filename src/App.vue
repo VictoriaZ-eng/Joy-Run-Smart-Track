@@ -1,68 +1,44 @@
 <template>
   <top></top>
   <div id="map"></div>
-  <router-view></router-view>
+    <router-view />
 </template>
 
 <script setup>
+import { ref, provide, onMounted } from 'vue';
 import mapboxgl from 'mapbox-gl';
 import { Scene, Mapbox } from '@antv/l7';
-import { onMounted } from 'vue';
-import top from '@/components/Top.vue';
 import { useControl } from '@/assets/hook/useControl';
+import top from '@/components/Top.vue';
+import { useRoute } from 'vue-router'
+// 加入以下两行代码是为了用mapbox插件实现地点查询
+const sceneRef = ref(null);  // ✅ 只在这里声明一次
+provide('scene', sceneRef);  // ✅ 共享这个 ref，子组件能动态获取到 scene 对象
 
-
-// 创建场景
-let scene;
-
-onMounted(async () => {
-  // 设置 Mapbox 访问令牌
+onMounted(() => {
   mapboxgl.accessToken = `pk.eyJ1IjoieHpkbWFwZ2lzIiwiYSI6ImNtOWtxbXU3eTBwcGEya3BvYW9ubWZ6bWwifQ.bn8nv2PPHfWDeDWExmQamQ`;
 
-  // 创建 Mapbox 地图实例
   const map = new mapboxgl.Map({
-    container: 'map', // 必须与 DOM 中的 id 匹配
+    container: 'map',
     style: 'mapbox://styles/mapbox/streets-v11',
-    center: [120.2, 30.25], // 杭州市拱墅区的部分区域
+    center: [120.2, 30.25],
     zoom: 12,
     attributionControl: false,
-    locale: {
-      'ScaleControl.Meters': '米',
-      'ScaleControl.Kilometers': '千米',
-    },
   });
 
-  // 创建 AntV L7 场景
-  scene = new Scene({
+  const scene = new Scene({
     id: 'map',
-    map: new Mapbox({
-      mapInstance: map,
-    }),
+    map: new Mapbox({ mapInstance: map }),
     logoVisible: false,
   });
 
-  // 等待场景加载完成
-  await scene.on('loaded', () => {
+  scene.on('loaded', () => {
     console.log('Scene loaded successfully');
+    sceneRef.value = scene;  // ✅ 动态赋值，触发响应
+    useControl(scene);
   });
-
-  // 提供 scene 实例给全局
-  app.provide('scene', scene);
-  // 调用 useControl 来添加自定义控件
-  useControl(scene);
-  scene.map.on("move",setFog);
 });
-
-// 动态雾效函数
-function setFog() {
-  const lng = Math.abs(scene.map.getCenter().lng);
-  scene.map.setFog({
-    color: `hsl(0,0,${lng / 360})`,
-    'high-color': `hsl(0,0,${lng / 360})`,
-  });
-}
 </script>
-
 
 <style scoped>
 /* 确保地图容器有明确的高度 */
@@ -71,12 +47,16 @@ function setFog() {
   height: 100vh; /* 全屏高度，可以根据需要调整 */
 }
 
-/* 调整 Mapbox 控件的位置 */
-:deep(.mapboxgl-ctrl) {
-  z-index: 1000;
+:deep(.l7-control-container .l7-top) {
+  top: 80px;
 }
 
-:deep(.l7-control) {
-  z-index: 1000;
+:deep(.l7-control-container .l7-bottom) {
+  bottom: 30px;
 }
+
+:deep(.mapboxgl-ctrl-bottom-left) {
+  bottom: 50px;
+}
+
 </style>
