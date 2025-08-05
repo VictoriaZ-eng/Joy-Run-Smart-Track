@@ -61,7 +61,7 @@ watch(
 .search-container {
   position: absolute; /* 确保它能浮动在地图上 */
   top: 3cm;           /* 距离顶部 20px，可根据需要调整 */
-  left: 20px;          /* 靠左边距 20px */
+  right: 20px;          /* 靠左边距 20px */
   display: flex;
   gap: 8px;
   background: white;

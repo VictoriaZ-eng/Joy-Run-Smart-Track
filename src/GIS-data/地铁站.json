@@ -1,20 +1,4 @@
-<template>
-  <div class="search">
-  
-      <select v-model="selectedType" @change="updateLayer">
-        <option value="subway">地铁站</option>
-        <option value="bus">公交车站</option>
-      </select>
-    </div>
-    </template>
-    
-    <script setup>
-    import { inject, onMounted, onBeforeUnmount, ref, watch } from 'vue';
-    import { PointLayer, Popup } from '@antv/l7';
-    import request from '@/util/request'; 
-    
-  //地铁站的geojson(比较长故折叠)
-    const subwayData = {
+{
     "type": "FeatureCollection",
     "features": [
       {
@@ -52,10 +36,7 @@
         "id": 2,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.188317,
-            30.334899
-          ]
+          "coordinates": [120.188317, 30.334899]
         },
         "properties": {
           "FID": 2,
@@ -70,10 +51,7 @@
         "id": 3,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.150223,
-            30.280146
-          ]
+          "coordinates": [120.150223, 30.280146]
         },
         "properties": {
           "FID": 3,
@@ -88,10 +66,7 @@
         "id": 4,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.172197,
-            30.330407
-          ]
+          "coordinates": [120.172197, 30.330407]
         },
         "properties": {
           "FID": 4,
@@ -106,10 +81,7 @@
         "id": 5,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.160651,
-            30.317478
-          ]
+          "coordinates": [120.160651, 30.317478]
         },
         "properties": {
           "FID": 5,
@@ -124,10 +96,7 @@
         "id": 6,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.155365,
-            30.269668
-          ]
+          "coordinates": [120.155365, 30.269668]
         },
         "properties": {
           "FID": 6,
@@ -142,10 +111,7 @@
         "id": 7,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.164052,
-            30.254642
-          ]
+          "coordinates": [120.164052, 30.254642]
         },
         "properties": {
           "FID": 7,
@@ -160,10 +126,7 @@
         "id": 8,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.178545,
-            30.341489
-          ]
+          "coordinates": [120.178545, 30.341489]
         },
         "properties": {
           "FID": 8,
@@ -178,10 +141,7 @@
         "id": 9,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.169934,
-            30.31603
-          ]
+          "coordinates": [120.169934, 30.31603]
         },
         "properties": {
           "FID": 9,
@@ -196,10 +156,7 @@
         "id": 10,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.175849,
-            30.308325
-          ]
+          "coordinates": [120.175849, 30.308325]
         },
         "properties": {
           "FID": 10,
@@ -214,10 +171,7 @@
         "id": 11,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.178913,
-            30.295539
-          ]
+          "coordinates": [120.178913, 30.295539]
         },
         "properties": {
           "FID": 11,
@@ -232,10 +186,7 @@
         "id": 12,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.158795,
-            30.290314
-          ]
+          "coordinates": [120.158795, 30.290314]
         },
         "properties": {
           "FID": 12,
@@ -250,10 +201,7 @@
         "id": 13,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.165639,
-            30.279585
-          ]
+          "coordinates": [120.165639, 30.279585]
         },
         "properties": {
           "FID": 13,
@@ -268,10 +216,7 @@
         "id": 14,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.164324,
-            30.272368
-          ]
+          "coordinates": [120.164324, 30.272368]
         },
         "properties": {
           "FID": 14,
@@ -286,10 +231,7 @@
         "id": 15,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.172436,
-            30.264596
-          ]
+          "coordinates": [120.172436, 30.264596]
         },
         "properties": {
           "FID": 15,
@@ -304,10 +246,7 @@
         "id": 16,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.179868,
-            30.271799
-          ]
+          "coordinates": [120.179868, 30.271799]
         },
         "properties": {
           "FID": 16,
@@ -322,10 +261,7 @@
         "id": 17,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.204384,
-            30.34005
-          ]
+          "coordinates": [120.204384, 30.34005]
         },
         "properties": {
           "FID": 17,
@@ -340,10 +276,7 @@
         "id": 18,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.200064,
-            30.323978
-          ]
+          "coordinates": [120.200064, 30.323978]
         },
         "properties": {
           "FID": 18,
@@ -358,10 +291,7 @@
         "id": 19,
         "geometry": {
           "type": "Point",
-          "coordinates": [
-            120.180761,
-            30.264552
-          ]
+          "coordinates": [120.180761, 30.264552]
         },
         "properties": {
           "FID": 19,
@@ -373,124 +303,3 @@
       }
     ]
   }
-    
-  // 公交站数据（将通过API获取GeoJSON）
-  const busData = ref(null);
-  const selectedType = ref('subway');
-  const scene = inject('scene');
-  const currentLayer = ref(null);
-  
-  // 加载公交站数据（直接使用GeoJSON格式）
-  async function loadBusData() {
-    try {
-      const response = await request.getbus();
-      // 假设API直接返回GeoJSON格式
-      busData.value = response.data || response;
-      
-      // 验证数据格式
-      if (!busData.value?.type === 'FeatureCollection') {
-        throw new Error('公交数据必须为GeoJSON格式');
-      }
-    } catch (error) {
-      console.error('加载公交数据失败:', error);
-    }
-  }
-  
-  // 通用弹窗内容生成
-  function generatePopupContent(props) {
-    return `
-      <b>站点名称:</b> ${props.sname || props.name}<br>
-      <b>线路信息:</b> ${props.address || '暂无'}<br>
-    `;
-  }
-  
-  // 创建图层（统一处理GeoJSON数据）
-  function createLayer(data, color) {
-    const layer = new PointLayer()
-      .source(data, { parser: { type: "geojson" } })
-      .shape("circle")
-      .size(8)
-      .color(color)
-      .style({ opacity: 0.9 });
-
-  
-    layer.on('click', (e) => {
-      new Popup()
-        .setLnglat(e.lngLat)
-        .setHTML(generatePopupContent(e.feature.properties))
-        .addTo(scene.value);
-    });
-  
-    return layer;
-  }
-  
-  // 更新图层显示
-  function updateLayer() {
-    if (!scene.value) return;
-  
-    // 移除旧图层
-    if (currentLayer.value) {
-      scene.value.removeLayer(currentLayer.value);
-    }
-  
-    // 添加新图层
-    if (selectedType.value === 'subway') {
-      currentLayer.value = createLayer(subwayData, '#FF0000');
-    } else if (busData.value) {
-      currentLayer.value = createLayer(busData.value, '#1890FF');
-    }
-  
-    if (currentLayer.value) {
-      scene.value.addLayer(currentLayer.value);
-    }
-  }
-  
-  onMounted(async () => {
-    // 预加载公交数据
-    await loadBusData();
-  
-    // 监听scene初始化
-    if (scene.value) {
-      updateLayer();
-    } else {
-      const stop = watch(scene, (newScene) => {
-        if (newScene) {
-          updateLayer();
-          stop();
-        }
-      });
-    }
-  });
-  
-  onBeforeUnmount(() => {
-    if (scene.value && currentLayer.value) {
-      scene.value.removeLayer(currentLayer.value);
-    }
-  });
-  </script>
-  
-  <style scoped>
-  .search {
-    position: absolute;
-    top: 121px;
-    right: 20px;
-    background: rgb(235, 239, 226);
-    padding: 8px;
-    border-radius: 4px;
-    z-index: 10;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    
-  }
-  
-  .search select {
-    margin-top: 5px;
-    padding: 6px 10px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    width: 200px;
-    height:40px;
-    cursor: pointer;
-    color:rgb(97, 144, 38);
-    font-size:20px;
-  }
-  </style>
