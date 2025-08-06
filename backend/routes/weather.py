@@ -67,10 +67,14 @@ def get_weather():
     cur = conn.cursor()
     # 获取最新四天的天气
     cur.execute("""
-        SELECT city, adcode, province, reporttime, date, week, dayweather, nightweather, daytemp, nighttemp, daywind, nightwind, daypower, nightpower, daytemp_float, nighttemp_float
-        FROM weather
+        SELECT *
+        FROM (
+            SELECT *
+            FROM weather
+            ORDER BY created_at DESC
+            LIMIT 4
+        ) AS latest_weather
         ORDER BY date ASC
-        LIMIT 4
     """)
     rows = cur.fetchall()
     columns = [desc[0] for desc in cur.description]

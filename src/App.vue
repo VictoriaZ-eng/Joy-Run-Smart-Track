@@ -165,8 +165,6 @@ const onRouteSelect = (routeId) => {
   position: absolute;
 }
 
-
-
 :deep(.l7-control-container .l7-top) {
   top: 80px;
 }
@@ -180,9 +178,19 @@ const onRouteSelect = (routeId) => {
 } */
 .app-container {
   display: flex;
-  height: 100vh;
+  height: 86vh;
+  margin-bottom:0vh; /* 确保顶部导航栏不覆盖地图 */
 }
 .map-container {
   flex: 1;
+  height: 100%;    /* 关键：让地图高度等于父容器 */
+  min-height: 0;   /* 防止flex子项溢出 */
+  overflow: hidden;
+}
+.map {
+  flex: 1;
+  height: 100%;    /* 关键：让地图高度等于父容器 */
+  min-height: 0;   /* 防止flex子项溢出 */
+  overflow: hidden;
 }
 </style>

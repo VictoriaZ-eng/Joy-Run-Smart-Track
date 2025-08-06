@@ -14,14 +14,14 @@
             <thead>
             <tr>
                 <th>日期</th>
-                <th>白天天气</th>
-                <th>白天温度</th>
-                <th>白天风向</th>
-                <th>白天风力</th>
-                <th>夜晚天气</th>
-                <th>夜晚温度</th>
-                <th>夜晚风向</th>
-                <th>夜晚风力</th>
+                <th>日间：</th>
+                <th>温度</th>
+                <th>风向</th>
+                <th>风力</th>
+                <th>夜间：</th>
+                <th>温度</th>
+                <th>风向</th>
+                <th>风力</th>
             </tr>
             </thead>
             <tbody>
@@ -101,23 +101,33 @@ export default {
     }
     },
     methods: {
-    async fetchWeatherInfo () {
+      async fetchWeatherInfo () {
         try {
-        const response = await axios.get(`${import.meta.env.VITE_APP_API_URL}/weather/api/get_weather`)
-        // 打印结果调试
-        console.log('Weather API Response:', response.data)
-        const data = response.data
-        this.weatherForecasts = data.forecasts.map(cast => ({
-            ...cast,
-            dayIcon: this.getWeatherIcon(cast.dayweather),
-            nightIcon: this.getWeatherIcon(cast.nightweather)
-        }))
-        // 可选：设置当前天气为第一天
-        this.weatherInfo = this.weatherForecasts[0]
-        this.updateCurrentWeather()
-    } catch (error) {
-        console.error('Error fetching weather information:', error)
-    }
+            const response = await axios.get(`${import.meta.env.VITE_APP_API_URL}/weather/api/get_weather`)
+            // 打印结果调试
+            console.log('Weather API Response:', response.data)
+            const data = response.data
+            this.weatherForecasts = data.forecasts.map(cast => ({
+                ...cast,
+                date: this.formatDate(cast.date), // 格式化日期
+                dayIcon: this.getWeatherIcon(cast.dayweather),
+                nightIcon: this.getWeatherIcon(cast.nightweather)
+            }))
+            // 可选：设置当前天气为第一天
+            this.weatherInfo = this.weatherForecasts[0]
+            this.updateCurrentWeather()
+        } catch (error) {
+            console.error('Error fetching weather information:', error)
+        }
+    },
+    formatDate(dateStr) {
+        // 例：Sat, 09 Aug 2025 00:00:00 GMT
+        const weekMap = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六']
+        const date = new Date(dateStr)
+        const month = date.getMonth() + 1
+        const day = date.getDate()
+        const week = weekMap[date.getDay()]
+        return `${month}月${day}日-${week}`
     },
     getWeatherIcon(weather) {
         return weatherIconMap[weather] || unknownIcon;
@@ -240,8 +250,10 @@ export default {
 .weather-details {
   position: absolute;
   top: 60px;
-  left: 0;
-  width: 400px;
+  left: -10vw;
+  right: 1vw;
+  min-width: 28vw;
+  max-width: 90vw;
   background: #fff;
   border: 1px solid #addfc2;
   box-shadow: 0 4px 16px rgba(0,0,0,0.12);
@@ -249,14 +261,27 @@ export default {
   z-index: 1001;
   padding: 20px;
   display: none;
+  overflow-x: auto;
 }
+
 .weather-details.show {
   display: block;
 }
+
 .cancel-btn {
   display: flex;
   justify-content: center;
   margin-top: 10px;
   cursor: pointer;
+}
+
+.weather-details table th,
+.weather-details table td {
+  white-space: nowrap;
+}
+
+.cancel-btn img {
+  width: 15px;
+  height: 15px;
 }
 </style>

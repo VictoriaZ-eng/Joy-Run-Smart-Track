@@ -361,7 +361,7 @@ function format(t) {
 /* 中间空白间隔样式 */
 .space {
   height: 100%;
-  width: 15vw; /* 确保间隔宽度 */
+  width: 18vw; /* 确保间隔宽度 */
   background-color: transparent; /* 完全透明 */
 }
 
