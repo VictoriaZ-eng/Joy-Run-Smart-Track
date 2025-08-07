@@ -269,7 +269,12 @@ const onRouteSelect = (routeId) => {
 }
 
 :deep(.l7-control-container .l7-top) {
-  top: 80px;
+  top: 80px !important;
+  z-index: 10 !important;
+}
+
+:deep(.l7-control-container .l7-left) {
+  z-index: 10 !important;
 }
 
 :deep(.l7-control-container .l7-bottom) {
@@ -279,6 +284,16 @@ const onRouteSelect = (routeId) => {
 :deep(.mapboxgl-ctrl-bottom-left) {
   bottom: 50px;
 } */
+
+:deep(.l7-control-container .l7-top) {
+  /* top: 80px !important; */
+  z-index: 10 !important;
+}
+
+:deep(.l7-control-container .l7-left) {
+  z-index: 10 !important;
+}
+
 .app-container {
   display: flex;
   height: 86vh;
@@ -344,5 +359,27 @@ const onRouteSelect = (routeId) => {
 
 .close-btn:hover {
   color: #333;
+}
+</style>
+
+<style>
+/* L7地图控件样式覆盖 - 全局样式 */
+.l7-control-container .l7-top {
+  top: 80px !important;
+  z-index: 10 !important;
+}
+
+.l7-control-container .l7-left {
+  z-index: 10 !important;
+}
+
+.l7-control-container .l7-bottom {
+  bottom: 30px !important;
+  z-index: 10 !important;
+}
+
+.mapboxgl-ctrl-bottom-left {
+  bottom: 50px !important;
+  z-index: 10 !important;
 }
 </style>
