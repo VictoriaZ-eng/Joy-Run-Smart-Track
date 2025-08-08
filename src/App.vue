@@ -27,174 +27,162 @@
 
 <script setup>
 import { ref, provide, onMounted } from 'vue';
-import mapboxgl from 'mapbox-gl';
-import { Scene, Mapbox, LineLayer, PointLayer,Popup } from '@antv/l7';
-import { useControl } from '@/assets/hook/useControl';
 import top from '@/components/Top.vue';
-import Sidebar from '@/components/Sidebar.vue'; // 侧边栏组件
-import request from '@/util/request';
+import Sidebar from '@/components/Sidebar.vue';
+// import request from '@/util/request';
 import route1Image from '@/assets/images/r1老德胜桥.png'
 import route2Image from '@/assets/images/r2时光公园.png'
 import route3Image from '@/assets/images/r3城北体育公园.png'
 import RouteChart from '@/components/RouteChart.vue';
 
+// 使用 ES Module 方式导入 GeoScene 模块
+import Map from '@geoscene/core/Map.js';
+import MapView from '@geoscene/core/views/MapView.js';
+import GraphicsLayer from '@geoscene/core/layers/GraphicsLayer.js';
+import Graphic from '@geoscene/core/Graphic.js';
+import Polyline from '@geoscene/core/geometry/Polyline.js';
+import Point from '@geoscene/core/geometry/Point.js';
+import SpatialReference from '@geoscene/core/geometry/SpatialReference.js';
+import FeatureLayer from '@geoscene/core/layers/FeatureLayer.js';
+import TileInfo from '@geoscene/core/layers/support/TileInfo.js';
+import BasemapGallery from '@geoscene/core/widgets/BasemapGallery.js';
 
 const sceneRef = ref(null);
 provide('scene', sceneRef);
 
 onMounted(() => {
-  mapboxgl.accessToken = `pk.eyJ1IjoieHpkbWFwZ2lzIiwiYSI6ImNtOWtxbXU3eTBwcGEya3BvYW9ubWZ6bWwifQ.bn8nv2PPHfWDeDWExmQamQ`;
-
-  const map = new mapboxgl.Map({
-    container: 'map',
-    style: 'mapbox://styles/mapbox/streets-v11',
-    center: [120.17, 30.30],
-    zoom: 12,
-    attributionControl: false,
-  });
-
-  const scene = new Scene({
-    id: 'map',
-    map: new Mapbox({ mapInstance: map }),
-    logoVisible: false,
-  });
-
-  scene.on('loaded', async () => {
-    console.log('Scene loaded successfully');
-    sceneRef.value = scene;
-    useControl(scene);
-    
-    // ✅ 正确初始化图层
-    await initLayers(scene);
-  });
+  // 直接使用导入的模块初始化地图
+  initMap();
 });
 
-
-async function initLayers(scene) {
+// 使用 ES Module 导入的组件初始化地图
+function initMap() {
   try {
-    const [route1, dibiao1,route2, dibiao2,route3, dibiao3] = await Promise.all([
-      request.getroute1(),
-      request.getdibiao1(),
-      request.getroute2(),
-      request.getdibiao2(),
-      request.getroute3(),
-      request.getdibiao3()
-    ]);
-
-    // 路线图层
-    const route1Layer = new LineLayer({ name: "推荐路线1" })
-      .source(route1)
-      .color("#e0c060")
-      .size(6)
-      .style({
-        lineType: "solid",
-        opacity: 1
-      })
-      .animate({
-    enable: true,
-    interval: 1, // 间隔
-    trailLength: 2, // 流线长度
-    duration: 3 // 持续时间
-  });
+    console.log('开始初始化地图...');
     
-      const route2Layer = new LineLayer({ name: "推荐路线2" })
-      .source(route2)
-      .color("#305070")
-      .size(3)
-      .style({
-        lineType: "solid",
-        opacity: 1
-      })
-      .animate({
-    enable: true,
-    interval: 1, // 间隔
-    trailLength: 2, // 流线长度
-    duration: 3 // 持续时间
-  });
-      const route3Layer = new LineLayer({ name: "推荐路线3" })
-      .source(route3)
-      .color("#e098a8")
-      .size(3)
-      .style({
-        lineType: "solid",
-        opacity: 1
-      })
-      .animate({
-    enable: true,
-    interval: 1, // 间隔
-    trailLength: 2, // 流线长度
-    duration: 3 // 持续时间
-  });
+    // 创建地图
+    const map = new Map({
+      basemap: "tianditu-vector" // 使用天地图底图
+    });
 
-    // 地标图层
-    const dibiao1Layer = new PointLayer({ name: "路线1地标" })
-      .source(dibiao1)
-      .shape("circle")
-      .color("#f8e088")
-      .size(10)
-      .style({
-        opacity: 1
-      });
-      const dibiao2Layer = new PointLayer({ name: "路线2地标" })
-      .source(dibiao2)
-      .shape("circle")
-      .color("#88a0c0")
-      .size(10)
-      .style({
-        opacity: 1
-      });
-      const dibiao3Layer = new PointLayer({ name: "路线3地标" })
-      .source(dibiao3)
-      .shape("circle")
-      .color("#c86080")
-      .size(10)
-      .style({
-        opacity: 0.9
-      });
+    // 创建地图视图
+    const view = new MapView({
+      container: "map",
+      map: map,
+      center: [120.17, 30.30], // 杭州坐标
+      zoom: 12
+    });
 
-// 创建全局 Popup
-let hoverPopup = null;
-
-// 封装悬停事件绑定函数
-function bindHoverPopup(layer) {
-  layer.on('mousemove', (e) => {
-    if (hoverPopup) hoverPopup.remove();
-
-    // 防止数据缺失
-    const props = e.feature?.properties || {};
-    const name = props.地标名 || '未知地标';
-
-    hoverPopup = new Popup({
-      offsets: [0, -20],
-      closeButton: false,
-      closeOnClick: false,
-      className: 'marker-popup'
-    })
-      .setLnglat(e.lngLat)
-      .setHTML(`<div style="padding: 4px; font-size: 12px;">${name}</div>`)
-      .addTo(scene);
-  });
-
-  layer.on('mouseout', () => {
-    if (hoverPopup) {
-      hoverPopup.remove();
-      hoverPopup = null;
-    }
-  });
+    sceneRef.value = view;
+    
+    // 等待视图准备就绪后初始化图层
+    view.when(() => {
+      console.log('地图视图准备就绪');
+      initLayers(view);
+    }).catch(error => {
+      console.error('地图视图初始化失败:', error);
+    });
+    
+  } catch (error) {
+    console.error('地图初始化失败:', error);
+  }
 }
 
-// 绑定所有图层悬停事件
-[dibiao1Layer, dibiao2Layer, dibiao3Layer].forEach(bindHoverPopup);
+// 使用导入的模块初始化图层
+// 路线和地标文件路径
+const routeFiles = [
+  '/src/GIS-data/推荐路线2/01.json',
+  '/src/GIS-data/推荐路线2/02.json',
+  '/src/GIS-data/推荐路线2/03.json',
+];
+const dibiaoFiles = [
+  '/src/GIS-data/推荐路线2/01地标1.json',
+  '/src/GIS-data/推荐路线2/02地标1.json',
+  '/src/GIS-data/推荐路线2/03地标1.json',
+];
 
-    scene.addLayer(route1Layer);
-    scene.addLayer(route2Layer);
-    scene.addLayer(route3Layer);
-    scene.addLayer(dibiao1Layer);
-    scene.addLayer(dibiao2Layer);
-    scene.addLayer(dibiao3Layer);
-  } catch (error) {
-    console.error('图层加载失败:', error);
+// 存储图层，便于后续清除和切换
+const routeLayers = [null, null, null];
+const dibiaoLayers = [null, null, null];
+
+async function fetchJson(url) {
+  // Vite dev 环境下 fetch 需要以 public/ 或 /src/ 开头
+  const res = await fetch(url);
+  return await res.json();
+}
+
+async function initLayers(view) {
+  // 默认加载全部路线和地标
+  for (let i = 0; i < 3; i++) {
+    await showRouteOnMap(i, view);
+    await showDibiaoOnMap(i, view);
   }
+}
+
+async function showRouteOnMap(idx, view) {
+  // 清除旧图层
+  if (routeLayers[idx]) {
+    view.map.remove(routeLayers[idx]);
+    routeLayers[idx] = null;
+  }
+  const colorArr = ["#e0c060", "#305070", "#e098a8"];
+  const url = routeFiles[idx];
+  const data = await fetchJson(url);
+  if (!data || !data.features) return;
+  const layer = new GraphicsLayer({ title: `推荐路线${idx + 1}` });
+  data.features.forEach(f => {
+    if (f.geometry.type === 'LineString') {
+      const polyline = new Polyline({ paths: [f.geometry.coordinates] });
+      const graphic = new Graphic({
+        geometry: polyline,
+        symbol: {
+          type: "simple-line",
+          color: colorArr[idx],
+          width: idx === 0 ? 6 : 3,
+        }
+      });
+      layer.add(graphic);
+    }
+  });
+  view.map.add(layer);
+  routeLayers[idx] = layer;
+}
+
+async function showDibiaoOnMap(idx, view) {
+  if (dibiaoLayers[idx]) {
+    view.map.remove(dibiaoLayers[idx]);
+    dibiaoLayers[idx] = null;
+  }
+  const colorArr = ["#f8e088", "#88a0c0", "#c86080"];
+  const url = dibiaoFiles[idx];
+  const data = await fetchJson(url);
+  if (!data || !data.features) return;
+  const layer = new GraphicsLayer({ title: `路线${idx + 1}地标` });
+  data.features.forEach(f => {
+    if (f.geometry.type === 'Point') {
+      const point = new Point({
+        longitude: f.geometry.coordinates[0],
+        latitude: f.geometry.coordinates[1]
+      });
+      const graphic = new Graphic({
+        geometry: point,
+        symbol: {
+          type: "simple-marker",
+          color: colorArr[idx],
+          size: 10,
+          outline: { color: "white", width: 1 }
+        },
+        attributes: f.properties,
+        popupTemplate: {
+          title: f.properties?.地标名 || '未知地标',
+          content: `<p>${f.properties?.地标名 || '暂无描述'}</p>`,
+        }
+      });
+      layer.add(graphic);
+    }
+  });
+  view.map.add(layer);
+  dibiaoLayers[idx] = layer;
 }
 // 路线元数据（用于传给 Sidebar）
 const routes = ref([
@@ -245,19 +233,115 @@ const closeDetailCard = () => {
 };
 
 
-// 点击聚焦地图
-const onRouteSelect = (routeId) => {
+// 点击聚焦地图并只显示对应路线和地标
+const onRouteSelect = async (routeId) => {
+  console.log('点击路线:', routeId);
   const selected = routes.value.find(r => r.id === routeId);
   if (selected && sceneRef.value) {
-    const map = sceneRef.value.getMapService().map;
-    map.flyTo({
-      center: selected.center,
-      zoom: 15,
-      speed: 0.8
-    });
+    const idx = routes.value.findIndex(r => r.id === routeId);
+    console.log('路线索引:', idx);
+    
+    try {
+      // 先隐藏其他路线
+      for (let i = 0; i < 3; i++) {
+        if (i !== idx) {
+          if (routeLayers[i]) {
+            routeLayers[i].visible = false;
+          }
+          if (dibiaoLayers[i]) {
+            dibiaoLayers[i].visible = false;
+          }
+        } else {
+          // 显示当前路线
+          if (routeLayers[i]) {
+            routeLayers[i].visible = true;
+          }
+          if (dibiaoLayers[i]) {
+            dibiaoLayers[i].visible = true;
+          }
+        }
+      }
+      
+      // 使用延时来确保图层状态更新完成
+      setTimeout(async () => {
+        try {
+          // 读取路线数据计算包络框
+          const url = routeFiles[idx];
+          const data = await fetchJson(url);
+
+          if (data && data.features && data.features.length > 0) {
+            let coords = [];
+            data.features.forEach(f => {
+              if (f.geometry.type === 'LineString') {
+                coords = coords.concat(f.geometry.coordinates);
+              }
+            });
+            
+            if (coords.length > 0) {
+              let minX = coords[0][0], maxX = coords[0][0], minY = coords[0][1], maxY = coords[0][1];
+              coords.forEach(([x, y]) => {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+              });
+              
+              // 创建 Extent 对象
+              const extent = {
+                xmin: minX,
+                ymin: minY,
+                xmax: maxX,
+                ymax: maxY,
+                spatialReference: { wkid: 4326 }
+              };
+              
+              console.log('计算的范围:', extent);
+              
+              // 使用 goTo 方法，添加一些选项
+              sceneRef.value.goTo(extent, {
+                duration: 1000,
+                easing: 'ease-in-out'
+              }).then(() => {
+                console.log('地图缩放完成');
+              }).catch(error => {
+                console.error('goTo 失败:', error);
+                // fallback 到简单的中心点缩放
+                sceneRef.value.goTo({
+                  center: selected.center,
+                  zoom: 15
+                });
+              });
+              return;
+            }
+          }
+          
+          // fallback
+          console.log('使用预设中心点缩放');
+          sceneRef.value.goTo({
+            center: selected.center,
+            zoom: 15
+          });
+          
+        } catch (error) {
+          console.error('延时执行失败:', error);
+          // 最终 fallback
+          sceneRef.value.goTo({
+            center: selected.center,
+            zoom: 15
+          });
+        }
+      }, 300);
+      
+    } catch (error) {
+      console.error('路线选择失败:', error);
+      // 直接 fallback
+      sceneRef.value.goTo({
+        center: selected.center,
+        zoom: 15
+      });
+    }
   }
 };
-
 
 </script>
 
