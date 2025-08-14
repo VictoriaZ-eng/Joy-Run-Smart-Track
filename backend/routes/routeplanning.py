@@ -166,8 +166,8 @@ class JoggingPathPlanner:
         column_mapping = {
             PreferenceMode.COMPREHENSIVE: "total",           # 综合得分（原Total）
             PreferenceMode.WATERFRONT: "water_mtotal",       # 滨水路线
-            PreferenceMode.GREEN: "(ndvi_mtotal + gvi_mtotal)",  # 绿化路线（两列相加）
-            PreferenceMode.OPEN_VIEW: "(svi_mtotal + buildng_mtotal)", # 视野开阔路线
+            PreferenceMode.GREEN: "ndvi_mtotal + COALESCE(gvi_mtotal, 0)",  # UPDATE: 修复组合字段语法
+            PreferenceMode.OPEN_VIEW: "svi_mtotal + COALESCE(buildng_mtotal, 0)", # UPDATE: 修复组合字段语法
             PreferenceMode.WELL_LIT: "light_mtotal",         # 夜间灯光充足路线
             PreferenceMode.FACILITIES: "poi_mtotal",         # 设施便利路线
             PreferenceMode.GENTLE_SLOPE: "slope_mtotal"      # 坡度平缓路线
@@ -207,15 +207,15 @@ class JoggingPathPlanner:
                 """
                 self.cursor.execute(sql, (start_node, end_node))
             else:
-                # 无终点：计算起点到所有节点的距离
+                # 无终点：计算起点到所有节点的累积距离
                 sql = """
-                SELECT min(cost), max(cost)
+                SELECT min(agg_cost), max(agg_cost)
                 FROM pgr_dijkstra(
                     'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
                     %s,
                     (SELECT array_agg(id) FROM nodesmodified WHERE id != %s),
                     directed := false
-                ) WHERE cost < 'Infinity'::float;
+                ) WHERE agg_cost < 'Infinity'::float AND agg_cost > 0;
                 """
                 self.cursor.execute(sql, (start_node, start_node))
             
@@ -353,19 +353,18 @@ class JoggingPathPlanner:
             """
             self.cursor.execute(sql, (start_node, end_node, min_dist, max_dist))
         else:
-            # 无终点模式：筛选起点到节点距离在范围内的节点
+            # 无终点模式：筛选起点到节点累积距离在范围内的节点
             sql = """
             SELECT end_vid as node_id
             FROM pgr_dijkstra(
                 'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
                 %s,
-                (SELECT array_agg(id) FROM nodesmodified),
+                (SELECT array_agg(id) FROM nodesmodified WHERE id != %s),
                 directed := false
             )
-            WHERE cost BETWEEN %s AND %s
-            GROUP BY end_vid;
+            WHERE agg_cost BETWEEN %s AND %s AND agg_cost > 0;
             """
-            self.cursor.execute(sql, (start_node, min_dist, max_dist))
+            self.cursor.execute(sql, (start_node, start_node, min_dist, max_dist))
         
         return [row[0] for row in self.cursor.fetchall()]
     
@@ -423,24 +422,30 @@ class JoggingPathPlanner:
     
     def calculate_shortest_path(self, start_node: int, end_node: int, 
                               constraint_mode: ConstraintMode, params: RouteParams) -> Dict:
-        """计算最短路径（模式5）或最少路段数路径（模式6） - UPDATE: 新增模式5,6支持（来自modified-3.m）"""
+        """计算最短路径（模式5）或最少路段数路径（模式6） - UPDATE: 新增模式5,6支持并修复偏好评分应用（来自modified-3.m）"""
+        
+        # UPDATE: 获取偏好模式对应的评分字段
+        preference_column = self.get_preference_total_column(params.preference_mode)
+        
         if constraint_mode == ConstraintMode.SHORTEST_PATH:
-            # 模式5：最短距离路径
-            sql = """
+            # 模式5：最短距离路径 - 考虑偏好评分的权重
+            cost_function = f"CASE WHEN {preference_column} > 0 THEN dis_ori / {preference_column} ELSE dis_ori * 10 END"
+            
+            sql = f"""
             SELECT 
                 array_agg(node ORDER BY seq) as path_nodes,
                 sum(cost) as total_distance,
                 count(*) as total_segments
             FROM pgr_dijkstra(
-                'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                'SELECT id, source, target, {cost_function} as cost, {cost_function} as reverse_cost FROM edgesmodified',
                 %s, %s, directed := false
             );
             """
             self.cursor.execute(sql, (start_node, end_node))
             
         elif constraint_mode == ConstraintMode.MIN_SEGMENTS_PATH:
-            # 模式6：最少路段数路径（使用BFS逻辑）
-            sql = """
+            # 模式6：最少路段数路径 - 同时考虑偏好评分
+            sql = f"""
             SELECT 
                 array_agg(node ORDER BY seq) as path_nodes,
                 count(*) as total_segments,
@@ -466,70 +471,88 @@ class JoggingPathPlanner:
             total_segments = segments_or_distance
             total_distance = distance_or_segments
             
-        # 计算路径得分和综合评价
-        preference_column = self.get_preference_total_column(params.preference_mode)
-        edges_str = ','.join(map(str, path_nodes[:-1]))  # 排除最后一个节点
+        # UPDATE: 计算路径的偏好得分和综合评价
+        edges_from_path = []
+        for i in range(len(path_nodes) - 1):
+            src_node = path_nodes[i]
+            tgt_node = path_nodes[i + 1]
+            edges_from_path.append(f"(source = {src_node} AND target = {tgt_node}) OR (source = {tgt_node} AND target = {src_node})")
         
-        sql = f"""
-        SELECT 
-            sum(score) as total_score,
-            sum({preference_column}) as total_preference_score
-        FROM edgesmodified 
-        WHERE source IN ({edges_str}) AND target IN ({edges_str});
-        """
-        self.cursor.execute(sql)
-        score_result = self.cursor.fetchone()
-        total_score = score_result[0] if score_result[0] else 0
-        total_preference_score = score_result[1] if score_result[1] else 0
+        if edges_from_path:
+            edges_condition = " OR ".join(edges_from_path)
+            sql = f"""
+            SELECT 
+                sum(score) as total_score,
+                sum({preference_column}) as total_preference_score,
+                sum(dis_ori) as actual_distance
+            FROM edgesmodified 
+            WHERE {edges_condition};
+            """
+            self.cursor.execute(sql)
+            score_result = self.cursor.fetchone()
+            total_score = score_result[0] if score_result[0] else 0
+            total_preference_score = score_result[1] if score_result[1] else 0
+            actual_distance = score_result[2] if score_result[2] else total_distance
+        else:
+            total_score = 0
+            total_preference_score = 0
+            actual_distance = total_distance
         
-        # 计算优化比值
+        # UPDATE: 使用偏好评分计算优化比值
         if params.w2 > 0:  # 使用长度权重
-            ratio = (total_preference_score ** params.w1) / (total_distance ** params.w2) if total_distance > 0 else 0
+            ratio = (total_preference_score ** params.w1) / (actual_distance ** params.w2) if actual_distance > 0 else 0
         else:  # 使用路段数权重
             ratio = (total_preference_score ** params.w1) / (total_segments ** params.w3) if total_segments > 0 else 0
         
         return {
             'node_id': -1,  # 标识为直接路径
             'path_nodes': path_nodes,
-            'dist_real': total_distance,
+            'preference_total': total_preference_score,  # UPDATE: 添加偏好总分
+            'dist_real': actual_distance,
             'segments': total_segments, 
             'score': total_score,
             'ratio': ratio,
-            'score_per_meter': total_score / total_distance if total_distance > 0 else 0,
-            'score_per_segment': total_score / total_segments if total_segments > 0 else 0
+            'score_per_meter': total_preference_score / actual_distance if actual_distance > 0 else 0,
+            'score_per_segment': total_preference_score / total_segments if total_segments > 0 else 0
         }
     
     def calculate_path_metrics(self, start_node: int, end_node: Optional[int], 
                              valid_nodes: List[int], params: RouteParams) -> List[Dict]:
         """
-        计算所有有效节点的路径指标
-        使用SQL批量计算提高效率
+        计算所有有效节点的路径指标 - UPDATE: 修复偏好模式在有终点约束时不生效的问题
+        使用SQL批量计算提高效率，并正确应用偏好评分
         """
         metrics = []
+        
+        # UPDATE: 获取偏好模式对应的评分字段
+        preference_column = self.get_preference_total_column(params.preference_mode)
         
         # 构建有效节点的WHERE子句
         valid_nodes_str = ','.join(map(str, valid_nodes))
         
         if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END]:
-            # 有终点模式：计算通过中间节点的路径指标
-            sql = """
+            # UPDATE: 有终点模式 - 修复偏好评分计算
+            # 使用偏好评分作为路径权重，而不是固定的distance
+            cost_function = f"CASE WHEN {preference_column} > 0 THEN dis_ori / {preference_column} ELSE dis_ori * 10 END"
+            
+            sql = f"""
             WITH start_paths AS (
                 SELECT 
                     end_vid as mid_node,
                     sum(cost) as dist_std_to_mid,
                     sum(b.dis_ori) as dist_real_to_mid,
                     count(*) as segments_to_mid,
+                    sum(b.{preference_column}) as preference_score_to_mid,
                     sum(b.total) as total_std_to_mid,
-                    sum(b.toatl_ori1) as total_real_to_mid,
                     sum(b.score) as score_to_mid
                 FROM pgr_dijkstra(
-                    'SELECT id, source, target, distance as cost, distance as reverse_cost FROM edgesmodified', 
+                    'SELECT id, source, target, {cost_function} as cost, {cost_function} as reverse_cost FROM edgesmodified', 
                     %s, 
-                    ARRAY[{nodes}], 
+                    ARRAY[{valid_nodes_str}], 
                     directed := false
                 ) a
                 JOIN edgesmodified b ON a.edge = b.id
-                WHERE end_vid IN ({nodes})
+                WHERE end_vid IN ({valid_nodes_str})
                 GROUP BY end_vid
             ),
             end_paths AS (
@@ -538,54 +561,56 @@ class JoggingPathPlanner:
                     sum(cost) as dist_std_from_mid, 
                     sum(b.dis_ori) as dist_real_from_mid,
                     count(*) as segments_from_mid,
+                    sum(b.{preference_column}) as preference_score_from_mid,
                     sum(b.total) as total_std_from_mid,
-                    sum(b.toatl_ori1) as total_real_from_mid,
                     sum(b.score) as score_from_mid
                 FROM pgr_dijkstra(
-                    'SELECT id, source, target, distance as cost, distance as reverse_cost FROM edgesmodified',
+                    'SELECT id, source, target, {cost_function} as cost, {cost_function} as reverse_cost FROM edgesmodified',
                     %s,
-                    ARRAY[{nodes}], 
+                    ARRAY[{valid_nodes_str}], 
                     directed := false
                 ) a
                 JOIN edgesmodified b ON a.edge = b.id  
-                WHERE end_vid IN ({nodes})
+                WHERE end_vid IN ({valid_nodes_str})
                 GROUP BY end_vid
             )
             SELECT 
                 s.mid_node,
+                (s.preference_score_to_mid + e.preference_score_from_mid) as preference_total,
                 (s.total_std_to_mid + e.total_std_from_mid) as total_std,
                 (s.dist_std_to_mid + e.dist_std_from_mid) as dist_std, 
                 (s.segments_to_mid + e.segments_from_mid) as segments,
-                (s.total_real_to_mid + e.total_real_from_mid) as total_real,
                 (s.dist_real_to_mid + e.dist_real_from_mid) as dist_real,
                 (s.score_to_mid + e.score_from_mid) as score
             FROM start_paths s
             JOIN end_paths e ON s.mid_node = e.mid_node
             WHERE s.mid_node != %s AND s.mid_node != %s;
-            """.format(nodes=valid_nodes_str)
+            """
             
             self.cursor.execute(sql, (start_node, end_node, start_node, end_node))
         else:
-            # 无终点模式：计算从起点到各节点的路径指标
-            sql = """
+            # UPDATE: 无终点模式 - 修复偏好评分计算
+            cost_function = f"CASE WHEN {preference_column} > 0 THEN dis_ori / {preference_column} ELSE dis_ori * 10 END"
+            
+            sql = f"""
             SELECT 
                 end_vid as node_id,
+                sum(b.{preference_column}) as preference_total,
                 sum(b.total) as total_std,
                 sum(cost) as dist_std,
                 count(*) as segments, 
-                sum(b.toatl_ori1) as total_real,
                 sum(b.dis_ori) as dist_real,
                 sum(b.score) as score
             FROM pgr_dijkstra(
-                'SELECT id, source, target, distance as cost, distance as reverse_cost FROM edgesmodified',
+                'SELECT id, source, target, {cost_function} as cost, {cost_function} as reverse_cost FROM edgesmodified',
                 %s,
-                ARRAY[{nodes}],
+                ARRAY[{valid_nodes_str}],
                 directed := false
             ) a
             JOIN edgesmodified b ON a.edge = b.id
-            WHERE end_vid IN ({nodes}) AND end_vid != %s
+            WHERE end_vid IN ({valid_nodes_str}) AND end_vid != %s
             GROUP BY end_vid;
-            """.format(nodes=valid_nodes_str)
+            """
             
             self.cursor.execute(sql, (start_node, start_node))
         
@@ -596,33 +621,33 @@ class JoggingPathPlanner:
         
         for row in results:
             if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END]:
-                node_id, total_std, dist_std, segments, total_real, dist_real, score = row
+                node_id, preference_total, total_std, dist_std, segments, dist_real, score = row
             else:
-                node_id, total_std, dist_std, segments, total_real, dist_real, score = row
+                node_id, preference_total, total_std, dist_std, segments, dist_real, score = row
             
             # 约束检查
             constraint_value = dist_real if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.DISTANCE_NO_END] else segments
             if not (min_constraint <= constraint_value <= max_constraint):
                 continue
             
-            # 计算优化比值
+            # UPDATE: 使用偏好评分计算优化比值
             if params.w2 > 0 and dist_std > 0:
-                ratio = (total_std ** params.w1) / (dist_std ** params.w2)
+                ratio = (preference_total ** params.w1) / (dist_std ** params.w2)
             elif params.w3 > 0 and segments > 0:
-                ratio = (total_std ** params.w1) / (segments ** params.w3)
+                ratio = (preference_total ** params.w1) / (segments ** params.w3)
             else:
                 continue
                 
             # 计算得分比值
-            score_per_meter = total_std / dist_std if dist_std > 0 else 0
-            score_per_segment = total_std / segments if segments > 0 else 0
+            score_per_meter = preference_total / dist_real if dist_real > 0 else 0
+            score_per_segment = preference_total / segments if segments > 0 else 0
             
             metrics.append({
                 'node_id': node_id,
+                'preference_total': preference_total,  # UPDATE: 添加偏好总分
                 'total_std': total_std,
                 'dist_std': dist_std,
                 'segments': segments,
-                'total_real': total_real,
                 'dist_real': dist_real,
                 'score': score,
                 'ratio': ratio,
@@ -877,15 +902,16 @@ class JoggingPathPlanner:
             
             # 获取最优路径
             path_nodes, coordinates, edge_details = self.get_optimal_path(start_node, end_node, best_metric)
-        logger.info(f"最优比值: {best_metric['ratio']:.4f}")
-        
-        # 获取最优路径
-        path_nodes, coordinates, edge_details = self.get_optimal_path(start_node, end_node, best_metric)
 
-        # 创建GeoJSON - UPDATE: 添加偏好模式信息
+        # UPDATE: 确保使用正确的偏好评分值
+        preference_score = best_metric.get('preference_total', best_metric.get('score', 0))
+        logger.info(f"偏好模式 {params.preference_mode.name} 总评分: {preference_score:.2f}")
+
+        # 创建GeoJSON - UPDATE: 添加偏好模式信息和偏好评分
         geojson = self.create_geojson(coordinates, {
             'optimization_ratio': best_metric['ratio'],
             'total_score': best_metric['score'],
+            'preference_score': preference_score,  # UPDATE: 新增偏好评分
             'total_distance': best_metric['dist_real'],
             'total_segments': best_metric['segments'],
             'score_per_meter': best_metric['score_per_meter'],
