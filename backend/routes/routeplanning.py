@@ -23,20 +23,33 @@ DB_CONFIG = {
 }
 
 class ConstraintMode(Enum):
-    """约束模式枚举"""
+    """约束模式枚举 - UPDATE: 扩展到6个模式（来自modified-3.m）"""
     DISTANCE_WITH_END = 1      # 有终点，距离约束
     SEGMENTS_WITH_END = 2      # 有终点，路段数约束  
     DISTANCE_NO_END = 3        # 无终点，距离约束
     SEGMENTS_NO_END = 4        # 无终点，路段数约束
+    SHORTEST_PATH = 5          # 有终点，最短距离（无约束）
+    MIN_SEGMENTS_PATH = 6      # 有终点，最少路段数（无约束）
+
+class PreferenceMode(Enum):
+    """偏好模式枚举 - UPDATE: 新增偏好系统（来自modified-3.m）"""
+    COMPREHENSIVE = 1          # 综合得分（原Total）
+    WATERFRONT = 2            # 滨水路线（Water_Mtotal）
+    GREEN = 3                 # 高绿化路线（NDVI_Mtotal + GVI_Mtotal）
+    OPEN_VIEW = 4             # 视野开阔路线（SVI_Mtotal + Buildng_Mtotal）
+    WELL_LIT = 5              # 夜间灯光充足路线（light_Mtotal）
+    FACILITIES = 6            # 设施便利路线（POI_Mtotal）
+    GENTLE_SLOPE = 7          # 坡度平缓路线（slope_Mtotal）
 
 @dataclass
 class RouteParams:
-    """路径规划参数"""
+    """路径规划参数 - UPDATE: 添加偏好模式支持（来自modified-3.m）"""
     start_lat: float
     start_lon: float
     end_lat: Optional[float] = None
     end_lon: Optional[float] = None
     constraint_mode: ConstraintMode = ConstraintMode.DISTANCE_WITH_END
+    preference_mode: PreferenceMode = PreferenceMode.COMPREHENSIVE  # UPDATE: 新增偏好模式
     
     # 权重参数
     w1: float = 1.0    # Total的权重
@@ -53,7 +66,7 @@ class RouteParams:
 
 @dataclass
 class RouteResult:
-    """路径规划结果"""
+    """路径规划结果 - UPDATE: 添加推荐约束范围信息（来自modified-3.m）"""
     path_nodes: List[int]
     path_coordinates: List[Tuple[float, float]]
     total_distance: float
@@ -63,6 +76,11 @@ class RouteResult:
     score_per_meter: float
     score_per_segment: float
     geojson: Dict
+    # UPDATE: 新增字段
+    recommended_distances: Optional[List[float]] = None   # 推荐距离范围
+    recommended_segments: Optional[List[int]] = None      # 推荐路段数范围
+    distance_range: Optional[Tuple[float, float]] = None # 有效距离范围
+    segments_range: Optional[Tuple[int, int]] = None     # 有效路段数范围
 
 class JoggingPathPlanner:
     def get_temp_folder(self):
@@ -121,7 +139,7 @@ class JoggingPathPlanner:
         return node_id, node_lat, node_lon
     
     def validate_params(self, params: RouteParams):
-        """验证参数合法性"""
+        """验证参数合法性 - UPDATE: 扩展到6个约束模式和7个偏好模式（来自modified-3.m）"""
         # 权重参数验证
         if params.w1 < 0:
             raise ValueError("w1必须为非负数")
@@ -129,10 +147,164 @@ class JoggingPathPlanner:
         if not ((params.w2 > 0 and params.w3 == 0) or (params.w2 == 0 and params.w3 > 0)):
             raise ValueError("w2和w3必须一正一零（w2>0用长度，w3>0用路段数）")
         
-        # 模式验证
-        if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END]:
+        # UPDATE: 约束模式验证（扩展到1-6）
+        if not isinstance(params.constraint_mode, ConstraintMode):
+            raise ValueError("constraintMode必须为1-6")
+        
+        # UPDATE: 偏好模式验证（新增1-7）
+        if not isinstance(params.preference_mode, PreferenceMode):
+            raise ValueError("preferenceMode必须为1-7")
+        
+        # UPDATE: 终点验证（模式1,2,5,6需要终点）
+        if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END, 
+                                    ConstraintMode.SHORTEST_PATH, ConstraintMode.MIN_SEGMENTS_PATH]:
             if params.end_lat is None or params.end_lon is None:
-                raise ValueError("有终点模式必须提供终点坐标")
+                raise ValueError("模式1,2,5,6需要提供终点坐标")
+    
+    def get_preference_total_column(self, preference_mode: PreferenceMode) -> str:
+        """根据偏好模式获取对应的Total列名 - UPDATE: 新增偏好系统（来自modified-3.m）"""
+        column_mapping = {
+            PreferenceMode.COMPREHENSIVE: "total",           # 综合得分（原Total）
+            PreferenceMode.WATERFRONT: "water_mtotal",       # 滨水路线
+            PreferenceMode.GREEN: "(ndvi_mtotal + gvi_mtotal)",  # 绿化路线（两列相加）
+            PreferenceMode.OPEN_VIEW: "(svi_mtotal + buildng_mtotal)", # 视野开阔路线
+            PreferenceMode.WELL_LIT: "light_mtotal",         # 夜间灯光充足路线
+            PreferenceMode.FACILITIES: "poi_mtotal",         # 设施便利路线
+            PreferenceMode.GENTLE_SLOPE: "slope_mtotal"      # 坡度平缓路线
+        }
+        return column_mapping[preference_mode]
+    
+    def calculate_dynamic_constraints(self, start_node: int, end_node: Optional[int], 
+                                    constraint_mode: ConstraintMode) -> Dict:
+        """动态计算约束范围并生成推荐值 - UPDATE: 新增动态约束计算（来自modified-3.m）"""
+        if constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.DISTANCE_NO_END]:
+            # 距离约束的动态计算
+            if constraint_mode == ConstraintMode.DISTANCE_WITH_END and end_node is not None:
+                # 有终点：计算起点+终点到所有节点的总距离
+                sql = """
+                WITH start_distances AS (
+                    SELECT end_vid as node_id, sum(cost) as dist_from_start
+                    FROM pgr_dijkstra(
+                        'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                        %s, 
+                        (SELECT array_agg(id) FROM nodesmodified),
+                        directed := false
+                    ) GROUP BY end_vid
+                ),
+                end_distances AS (
+                    SELECT end_vid as node_id, sum(cost) as dist_to_end  
+                    FROM pgr_dijkstra(
+                        'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                        %s,
+                        (SELECT array_agg(id) FROM nodesmodified), 
+                        directed := false
+                    ) GROUP BY end_vid
+                )
+                SELECT min(s.dist_from_start + e.dist_to_end) as min_dist, 
+                       max(s.dist_from_start + e.dist_to_end) as max_dist
+                FROM start_distances s
+                JOIN end_distances e ON s.node_id = e.node_id;
+                """
+                self.cursor.execute(sql, (start_node, end_node))
+            else:
+                # 无终点：计算起点到所有节点的距离
+                sql = """
+                SELECT min(cost), max(cost)
+                FROM pgr_dijkstra(
+                    'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                    %s,
+                    (SELECT array_agg(id) FROM nodesmodified WHERE id != %s),
+                    directed := false
+                ) WHERE cost < 'Infinity'::float;
+                """
+                self.cursor.execute(sql, (start_node, start_node))
+            
+            result = self.cursor.fetchone()
+            if not result or result[0] is None:
+                raise ValueError("无法计算有效距离范围，请检查路网数据")
+            
+            min_dist, max_dist = result
+            distance_step = 500  # 500米间隔
+            
+            # 生成推荐距离（向上取整到步长倍数）
+            min_recommended = int(np.ceil(min_dist / distance_step) * distance_step)
+            max_recommended = int(np.floor(max_dist / distance_step) * distance_step)
+            
+            if min_recommended > max_recommended:
+                recommended_distances = [min_recommended]
+            else:
+                recommended_distances = list(range(min_recommended, max_recommended + 1, distance_step))
+            
+            return {
+                'type': 'distance',
+                'min_value': min_dist,
+                'max_value': max_dist,
+                'recommended_values': recommended_distances,
+                'step': distance_step,
+                'unit': 'meters'
+            }
+            
+        else:  # 路段数约束
+            if constraint_mode == ConstraintMode.SEGMENTS_WITH_END and end_node is not None:
+                # 有终点：使用递归CTE计算路段数范围（简化版BFS）
+                sql = """
+                WITH RECURSIVE segments_calc AS (
+                    SELECT source, target, 1 as segments
+                    FROM edgesmodified
+                    WHERE source = %s OR target = %s
+                    UNION ALL
+                    SELECT e.source, e.target, s.segments + 1
+                    FROM segments_calc s
+                    JOIN edgesmodified e ON (e.source = s.target OR e.target = s.source)
+                    WHERE s.segments < 50  -- 限制递归深度
+                )
+                SELECT min(segments), max(segments)
+                FROM segments_calc
+                WHERE source = %s OR target = %s;
+                """
+                self.cursor.execute(sql, (start_node, start_node, end_node, end_node))
+            else:
+                # 无终点：单源路段数计算
+                sql = """
+                WITH RECURSIVE segments_calc AS (
+                    SELECT target as node_id, 1 as segments
+                    FROM edgesmodified
+                    WHERE source = %s
+                    UNION ALL
+                    SELECT e.target, s.segments + 1
+                    FROM segments_calc s
+                    JOIN edgesmodified e ON e.source = s.node_id
+                    WHERE s.segments < 50 AND s.node_id != %s
+                )
+                SELECT min(segments), max(segments)
+                FROM segments_calc;
+                """
+                self.cursor.execute(sql, (start_node, start_node))
+            
+            result = self.cursor.fetchone()
+            if not result or result[0] is None:
+                raise ValueError("无法计算有效路段数范围，请检查路网数据")
+            
+            min_segments, max_segments = result
+            segments_step = 5  # 5段间隔
+            
+            # 生成推荐路段数
+            min_recommended = int(np.ceil(min_segments / segments_step) * segments_step)
+            max_recommended = int(np.floor(max_segments / segments_step) * segments_step)
+            
+            if min_recommended > max_recommended:
+                recommended_segments = [min_recommended]
+            else:
+                recommended_segments = list(range(min_recommended, max_recommended + 1, segments_step))
+            
+            return {
+                'type': 'segments',
+                'min_value': min_segments,
+                'max_value': max_segments,
+                'recommended_values': recommended_segments,
+                'step': segments_step,
+                'unit': 'segments'
+            }
     
     def get_constraint_bounds(self, params: RouteParams) -> Tuple[float, float]:
         """获取约束范围"""
@@ -248,6 +420,84 @@ class JoggingPathPlanner:
             self.cursor.execute(sql, (start_node, max_segments, min_segments, max_segments))
         
         return [row[0] for row in self.cursor.fetchall()]
+    
+    def calculate_shortest_path(self, start_node: int, end_node: int, 
+                              constraint_mode: ConstraintMode, params: RouteParams) -> Dict:
+        """计算最短路径（模式5）或最少路段数路径（模式6） - UPDATE: 新增模式5,6支持（来自modified-3.m）"""
+        if constraint_mode == ConstraintMode.SHORTEST_PATH:
+            # 模式5：最短距离路径
+            sql = """
+            SELECT 
+                array_agg(node ORDER BY seq) as path_nodes,
+                sum(cost) as total_distance,
+                count(*) as total_segments
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                %s, %s, directed := false
+            );
+            """
+            self.cursor.execute(sql, (start_node, end_node))
+            
+        elif constraint_mode == ConstraintMode.MIN_SEGMENTS_PATH:
+            # 模式6：最少路段数路径（使用BFS逻辑）
+            sql = """
+            SELECT 
+                array_agg(node ORDER BY seq) as path_nodes,
+                count(*) as total_segments,
+                sum(cost) as total_distance
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, 1 as cost, 1 as reverse_cost FROM edgesmodified',
+                %s, %s, directed := false
+            ) a
+            JOIN edgesmodified b ON a.edge = b.id;
+            """
+            self.cursor.execute(sql, (start_node, end_node))
+        
+        result = self.cursor.fetchone()
+        if not result or not result[0]:
+            raise ValueError("起点到终点无可达路径")
+        
+        path_nodes, segments_or_distance, distance_or_segments = result
+        
+        if constraint_mode == ConstraintMode.SHORTEST_PATH:
+            total_distance = segments_or_distance
+            total_segments = distance_or_segments
+        else:  # MIN_SEGMENTS_PATH
+            total_segments = segments_or_distance
+            total_distance = distance_or_segments
+            
+        # 计算路径得分和综合评价
+        preference_column = self.get_preference_total_column(params.preference_mode)
+        edges_str = ','.join(map(str, path_nodes[:-1]))  # 排除最后一个节点
+        
+        sql = f"""
+        SELECT 
+            sum(score) as total_score,
+            sum({preference_column}) as total_preference_score
+        FROM edgesmodified 
+        WHERE source IN ({edges_str}) AND target IN ({edges_str});
+        """
+        self.cursor.execute(sql)
+        score_result = self.cursor.fetchone()
+        total_score = score_result[0] if score_result[0] else 0
+        total_preference_score = score_result[1] if score_result[1] else 0
+        
+        # 计算优化比值
+        if params.w2 > 0:  # 使用长度权重
+            ratio = (total_preference_score ** params.w1) / (total_distance ** params.w2) if total_distance > 0 else 0
+        else:  # 使用路段数权重
+            ratio = (total_preference_score ** params.w1) / (total_segments ** params.w3) if total_segments > 0 else 0
+        
+        return {
+            'node_id': -1,  # 标识为直接路径
+            'path_nodes': path_nodes,
+            'dist_real': total_distance,
+            'segments': total_segments, 
+            'score': total_score,
+            'ratio': ratio,
+            'score_per_meter': total_score / total_distance if total_distance > 0 else 0,
+            'score_per_segment': total_score / total_segments if total_segments > 0 else 0
+        }
     
     def calculate_path_metrics(self, start_node: int, end_node: Optional[int], 
                              valid_nodes: List[int], params: RouteParams) -> List[Dict]:
@@ -549,7 +799,7 @@ class JoggingPathPlanner:
     
     def plan_route(self, params: RouteParams) -> RouteResult:
         """
-        主要路径规划方法
+        主要路径规划方法 - UPDATE: 支持6种约束模式和7种偏好模式（来自modified-3.m）
         
         Args:
             params: 路径规划参数
@@ -557,7 +807,7 @@ class JoggingPathPlanner:
         Returns:
             路径规划结果
         """
-        logger.info(f"开始路径规划，模式: {params.constraint_mode.name}")
+        logger.info(f"开始路径规划，约束模式: {params.constraint_mode.name}，偏好模式: {params.preference_mode.name}")
         
         # 验证参数
         self.validate_params(params)
@@ -565,52 +815,83 @@ class JoggingPathPlanner:
         # 查找起终点最近的路网节点，并输出吸附信息
         start_node, start_node_lat, start_node_lon = self.find_nearest_node(params.start_lat, params.start_lon)
         end_node = None
-        end_node_lat = None
-        end_node_lon = None
-        if params.end_lat is not None and params.end_lon is not None:
-            end_node, end_node_lat, end_node_lon = self.find_nearest_node(params.end_lat, params.end_lon)
+        end_node_lat = end_node_lon = None
+        
+        # UPDATE: 根据约束模式决定是否需要终点
+        if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END, 
+                                    ConstraintMode.SHORTEST_PATH, ConstraintMode.MIN_SEGMENTS_PATH]:
+            if params.end_lat is not None and params.end_lon is not None:
+                end_node, end_node_lat, end_node_lon = self.find_nearest_node(params.end_lat, params.end_lon)
+                logger.info(f"终点吸附到节点: {end_node} (lat={end_node_lat}, lon={end_node_lon})")
+        
         logger.info(f"起点吸附到节点: {start_node} (lat={start_node_lat}, lon={start_node_lon})")
-        if end_node is not None:
-            logger.info(f"终点吸附到节点: {end_node} (lat={end_node_lat}, lon={end_node_lon})")
+        
+        # UPDATE: 处理最短路径模式（5和6）
+        if params.constraint_mode in [ConstraintMode.SHORTEST_PATH, ConstraintMode.MIN_SEGMENTS_PATH]:
+            if end_node is None:
+                raise ValueError("模式5和6需要提供终点坐标")
+            
+            # 直接计算最短路径
+            best_metric = self.calculate_shortest_path(start_node, end_node, params.constraint_mode, params)
+            logger.info(f"最短路径计算完成，距离: {best_metric['dist_real']:.2f}米，路段数: {best_metric['segments']}")
+            
+            # 获取路径坐标
+            path_nodes, coordinates, edge_details = self.get_optimal_path(start_node, end_node, best_metric)
+            
         else:
-            logger.info(f"终点节点: {end_node}")
-        
-        # 获取约束范围
-        min_constraint, max_constraint = self.get_constraint_bounds(params)
-        logger.info(f"约束范围: {min_constraint} - {max_constraint}")
-        
-        # 筛选有效节点
-        if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.DISTANCE_NO_END]:
-            valid_nodes = self.filter_valid_nodes_by_distance(start_node, end_node, min_constraint, max_constraint)
-        else:
-            valid_nodes = self.filter_valid_nodes_by_segments(start_node, end_node, min_constraint, max_constraint)
-        
-        if not valid_nodes:
-            raise ValueError("没有满足约束条件的节点，请调整约束范围")
-        
-        logger.info(f"有效节点数: {len(valid_nodes)}")
-        
-        # 计算路径指标
-        metrics = self.calculate_path_metrics(start_node, end_node, valid_nodes, params)
-        
-        if not metrics:
-            raise ValueError("没有找到有效路径，请调整约束参数")
-        
-        # 选择最优路径
-        best_metric = max(metrics, key=lambda x: x['ratio'])
+            # UPDATE: 传统约束模式（1-4）- 支持动态约束计算
+            # 首先计算动态约束范围
+            try:
+                constraint_info = self.calculate_dynamic_constraints(start_node, end_node, params.constraint_mode)
+                logger.info(f"动态约束范围: {constraint_info['min_value']:.0f} - {constraint_info['max_value']:.0f} {constraint_info['unit']}")
+                logger.info(f"推荐值: {constraint_info['recommended_values']}")
+            except Exception as e:
+                logger.warning(f"动态约束计算失败，使用固定约束: {e}")
+                constraint_info = None
+            
+            # 获取约束范围
+            min_constraint, max_constraint = self.get_constraint_bounds(params)
+            logger.info(f"使用约束范围: {min_constraint} - {max_constraint}")
+            
+            # 筛选有效节点
+            if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.DISTANCE_NO_END]:
+                valid_nodes = self.filter_valid_nodes_by_distance(start_node, end_node, min_constraint, max_constraint)
+            else:
+                valid_nodes = self.filter_valid_nodes_by_segments(start_node, end_node, min_constraint, max_constraint)
+            
+            if not valid_nodes:
+                print("valid_nodes:", len(valid_nodes))
+                raise ValueError("没有满足约束条件的节点，请调整约束范围")
+            
+            logger.info(f"有效节点数: {len(valid_nodes)}")
+            
+            # 计算路径指标
+            metrics = self.calculate_path_metrics(start_node, end_node, valid_nodes, params)
+            
+            if not metrics:
+                raise ValueError("没有找到有效路径，请调整约束参数")
+            
+            # 选择最优路径
+            best_metric = max(metrics, key=lambda x: x['ratio'])
+            logger.info(f"最优比值: {best_metric['ratio']:.4f}")
+            
+            # 获取最优路径
+            path_nodes, coordinates, edge_details = self.get_optimal_path(start_node, end_node, best_metric)
         logger.info(f"最优比值: {best_metric['ratio']:.4f}")
         
         # 获取最优路径
         path_nodes, coordinates, edge_details = self.get_optimal_path(start_node, end_node, best_metric)
 
-        # 创建GeoJSON
+        # 创建GeoJSON - UPDATE: 添加偏好模式信息
         geojson = self.create_geojson(coordinates, {
             'optimization_ratio': best_metric['ratio'],
             'total_score': best_metric['score'],
             'total_distance': best_metric['dist_real'],
             'total_segments': best_metric['segments'],
             'score_per_meter': best_metric['score_per_meter'],
-            'score_per_segment': best_metric['score_per_segment']
+            'score_per_segment': best_metric['score_per_segment'],
+            'constraint_mode': params.constraint_mode.name,
+            'preference_mode': params.preference_mode.name  # UPDATE: 新增偏好模式信息
         }, edge_details)
 
         # 保存GeoJSON到指定临时目录
@@ -626,7 +907,8 @@ class JoggingPathPlanner:
         except Exception as e:
             logger.error(f"保存GeoJSON失败: {e}")
 
-        return RouteResult(
+        # UPDATE: 返回结果包含动态约束信息
+        result = RouteResult(
             path_nodes=path_nodes,
             path_coordinates=coordinates,
             total_distance=best_metric['dist_real'],
@@ -637,22 +919,34 @@ class JoggingPathPlanner:
             score_per_segment=best_metric['score_per_segment'],
             geojson=geojson
         )
+        
+        # UPDATE: 添加动态约束推荐信息（如果计算成功）
+        if 'constraint_info' in locals() and constraint_info:
+            if constraint_info['type'] == 'distance':
+                result.recommended_distances = constraint_info['recommended_values']
+                result.distance_range = (constraint_info['min_value'], constraint_info['max_value'])
+            else:
+                result.recommended_segments = constraint_info['recommended_values']
+                result.segments_range = (constraint_info['min_value'], constraint_info['max_value'])
+        
+        return result
 
 def plan_jogging_route(start_lat: float, start_lon: float, 
                       end_lat: Optional[float] = None, end_lon: Optional[float] = None,
-                      constraint_mode: int = 1, target_distance: float = 5000,
-                      distance_tolerance: float = 400, target_segments: int = 40,
-                      segments_tolerance: int = 5, w1: float = 1.0, 
-                      w2: float = 0.0, w3: float = 1.0) -> Dict:
+                      constraint_mode: int = 1, preference_mode: int = 1,  # UPDATE: 新增偏好模式参数
+                      target_distance: float = 5000, distance_tolerance: float = 400, 
+                      target_segments: int = 40, segments_tolerance: int = 5, 
+                      w1: float = 1.0, w2: float = 0.0, w3: float = 1.0) -> Dict:
     """
-    便捷的路径规划函数
+    便捷的路径规划函数 - UPDATE: 支持6种约束模式和7种偏好模式（来自modified-3.m）
     
     Args:
         start_lat: 起点纬度
         start_lon: 起点经度
         end_lat: 终点纬度（可选）
         end_lon: 终点经度（可选）
-        constraint_mode: 约束模式 (1-4)，模式1：有终点，距离约束；模式2：有终点，路段数约束；模式3：无终点，距离约束；模式4：无终点，路段数约束
+        constraint_mode: 约束模式 (1-6)，模式1：有终点，距离约束；模式2：有终点，路段数约束；模式3：无终点，距离约束；模式4：无终点，路段数约束；模式5：有终点，最短距离；模式6：有终点，最少路段数
+        preference_mode: 偏好模式 (1-7)，模式1：综合得分；模式2：滨水路线；模式3：绿化路线；模式4：视野开阔路线；模式5：夜间灯光充足路线；模式6：设施便利路线；模式7：坡度平缓路线
         target_distance: 目标距离(米)
         distance_tolerance: 距离容差
         target_segments: 目标路段数
@@ -664,13 +958,14 @@ def plan_jogging_route(start_lat: float, start_lon: float,
     Returns:
         包含路径信息的字典
     """
-    # 参数设置
+    # 参数设置 - UPDATE: 添加偏好模式
     params = RouteParams(
         start_lat=start_lat,
         start_lon=start_lon,
         end_lat=end_lat,
         end_lon=end_lon,
         constraint_mode=ConstraintMode(constraint_mode),
+        preference_mode=PreferenceMode(preference_mode),  # UPDATE: 新增偏好模式
         target_distance=target_distance,
         distance_tolerance=distance_tolerance,
         target_segments=target_segments,
@@ -696,7 +991,12 @@ def plan_jogging_route(start_lat: float, start_lon: float,
             'optimization_ratio': result.optimization_ratio,
             'score_per_meter': result.score_per_meter,
             'score_per_segment': result.score_per_segment,
-            'geojson': result.geojson
+            'geojson': result.geojson,
+            # UPDATE: 新增动态约束推荐信息
+            'recommended_distances': result.recommended_distances,
+            'recommended_segments': result.recommended_segments,
+            'distance_range': result.distance_range,
+            'segments_range': result.segments_range
         }
     except Exception as e:
         logger.error(f"路径规划失败: {e}")
@@ -707,31 +1007,90 @@ def plan_jogging_route(start_lat: float, start_lon: float,
     finally:
         planner.disconnect()
 
-def test():
-     # 示例：杭州某地的慢跑路径规划
-    result = plan_jogging_route(
-        start_lat=30.263982,  # 起点纬度
-        start_lon=120.1588077, # 起点经度
-        end_lat=30.341572,    # 终点纬度（可选）
-        end_lon=120.1876803,   # 终点经度（可选）
-        constraint_mode=1,  # 模式1：有终点，距离约束
-        target_distance=15000,  # 目标距离15公里
-        distance_tolerance=500,  # 容差500米
-        w1=1.0,             # Total权重
-        w2=0.0,             # 长度权重
-        w3=1.0              # 路段数权重
-    )
+def test(test_mode: int = 1):
+    """
+    路径规划测试
+    有3个modes，分别是：
+    测试1：滨水路线偏好（偏好模式2）。
+    测试2：最短路径模式（约束模式5）。
+    测试3：绿化路线偏好，无终点模式（约束模式3，偏好模式3）
+    """
+    # UPDATE: 示例测试支持新的偏好模式（来自modified-3.m）
+    if test_mode == 1:
+        print("=== 测试1：路线偏好===")
+        result1 = plan_jogging_route(
+            start_lat=30.263982,  # 起点纬度
+            start_lon=120.1588077, # 起点经度
+            end_lat=30.341572,    # 终点纬度（可选）
+            end_lon=120.1876803,   # 终点经度（可选）
+            constraint_mode=1,    # 模式1：有终点，距离约束
+            preference_mode=7,    # UPDATE: 偏好模式7：坡度平缓路线
+            target_distance=10000,  # 目标距离10公里
+            distance_tolerance=5000,  # 容差5000米
+            w1=1.0,             # Total权重
+            w2=0.0,             # 长度权重
+            w3=1.0              # 路段数权重
+        )
+        
+        if result1['success']:
+            print("滨水路线规划成功！")
+            print(f"总距离: {result1['total_distance']:.2f}米")
+            print(f"总路段数: {result1['total_segments']}")
+            print(f"优化比值: {result1['optimization_ratio']:.4f}")
+            print(f"每米可慢跑性: {result1['score_per_meter']:.4f}")
+            print(f"每段可慢跑性: {result1['score_per_segment']:.4f}")
+            # UPDATE: 显示动态约束推荐信息
+            if result1['recommended_distances']:
+                print(f"推荐距离: {result1['recommended_distances']}")
+            if result1['distance_range']:
+                print(f"有效距离范围: {result1['distance_range'][0]:.0f} - {result1['distance_range'][1]:.0f}米")
+        else:
+            print(f"滨水路线规划失败: {result1['error']}")
+    if test_mode == 2:
+        print("\n=== 测试2：最短路径模式（约束模式5） ===")
+        result2 = plan_jogging_route(
+            start_lat=30.263982,
+            start_lon=120.1588077,
+            end_lat=30.341572,
+            end_lon=120.1876803,
+            constraint_mode=5,    # UPDATE: 模式5：最短距离路径
+            preference_mode=3,    # 偏好模式1：综合得分
+            w1=1.0,
+            w2=0.0,
+            w3=1.0
+        )
+        
+        if result2['success']:
+            print("最短路径规划成功！")
+            print(f"总距离: {result2['total_distance']:.2f}米")
+            print(f"总路段数: {result2['total_segments']}")
+            print(f"优化比值: {result2['optimization_ratio']:.4f}")
+        else:
+            print(f"最短路径规划失败: {result2['error']}")
     
-    if result['success']:
-        print("路径规划成功！")
-        print(f"总距离: {result['total_distance']:.2f}米")
-        print(f"总路段数: {result['total_segments']}")
-        print(f"优化比值: {result['optimization_ratio']:.4f}")
-        print(f"每米可慢跑性: {result['score_per_meter']:.4f}")
-        print(f"每段可慢跑性: {result['score_per_segment']:.4f}")
-        # print(f"GeoJSON: {json.dumps(result['geojson'], indent=2)}")
-    else:
-        print(f"路径规划失败: {result['error']}")
+    if test_mode == 3:
+        print("\n=== 测试3：绿化路线偏好，无终点模式（约束模式3，偏好模式3） ===")
+        result3 = plan_jogging_route(
+            start_lat=30.263982,
+            start_lon=120.1588077,
+            constraint_mode=3,    # 模式3：无终点，距离约束
+            preference_mode=6,    # UPDATE: 偏好模式6：设施便利路线
+            target_distance=7000,  # 目标距离8公里
+            distance_tolerance=7000,
+            w1=1.0,
+            w2=0.0,
+            w3=1.0
+        )
+        
+        if result3['success']:
+            print("绿化路线规划成功！")
+            print(f"总距离: {result3['total_distance']:.2f}米")
+            print(f"总路段数: {result3['total_segments']}")
+            print(f"优化比值: {result3['optimization_ratio']:.4f}")
+            if result3['recommended_distances']:
+                print(f"推荐距离: {result3['recommended_distances']}")
+        else:
+            print(f"绿化路线规划失败: {result3['error']}")
 
 
 # ================================
@@ -749,16 +1108,17 @@ try:
     @route_planning_bp.route('/api/get_routes', methods=['POST'])
     def get_routes():
         """
-        路径规划API端点
+        路径规划API端点 - UPDATE: 支持6种约束模式和7种偏好模式（来自modified-3.m）
         接受JSON格式的路径规划请求，返回生成的文件名
         
         请求格式:
         {
             "start_lat": 30.3210982,
             "start_lon": 120.1788077,
-            "end_lat": 30.313572,          # 可选
-            "end_lon": 120.1776803,        # 可选
-            "constraint_mode": 1,          # 1-4, 默认1
+            "end_lat": 30.313572,          # 可选（模式1,2,5,6需要）
+            "end_lon": 120.1776803,        # 可选（模式1,2,5,6需要）
+            "constraint_mode": 1,          # 1-6, 默认1（UPDATE: 扩展到6个模式）
+            "preference_mode": 1,          # 1-7, 默认1（UPDATE: 新增偏好模式）
             "target_distance": 6000,       # 目标距离(米), 默认5000
             "distance_tolerance": 500,     # 距离容差, 默认400
             "target_segments": 40,         # 目标路段数, 默认40
@@ -767,6 +1127,23 @@ try:
             "w2": 0.0,                    # 长度权重, 默认0.0
             "w3": 1.0                     # 路段数权重, 默认1.0
         }
+        
+        约束模式说明:
+        1: 有终点，距离约束
+        2: 有终点，路段数约束
+        3: 无终点，距离约束
+        4: 无终点，路段数约束
+        5: 有终点，最短距离（无约束）
+        6: 有终点，最少路段数（无约束）
+        
+        偏好模式说明:
+        1: 综合得分（原Total）
+        2: 滨水路线
+        3: 绿化路线
+        4: 视野开阔路线
+        5: 夜间灯光充足路线
+        6: 设施便利路线
+        7: 坡度平缓路线
         
         响应格式:
         {
@@ -778,7 +1155,10 @@ try:
                 "total_segments": 42,
                 "optimization_ratio": 1.2345,
                 "score_per_meter": 0.0012,
-                "score_per_segment": 15.67
+                "score_per_segment": 15.67,
+                "recommended_distances": [5000, 5500, 6000],  # UPDATE: 动态推荐值
+                "distance_range": [3200, 8500]                # UPDATE: 有效范围
+            }
             }
         }
         """
@@ -800,12 +1180,13 @@ try:
                         'error': f'缺少必需参数: {param}'
                     }), 400
             
-            # 提取参数，设置默认值
+            # 提取参数，设置默认值 - UPDATE: 添加偏好模式参数
             start_lat = float(data['start_lat'])
             start_lon = float(data['start_lon'])
             end_lat = data.get('end_lat')
             end_lon = data.get('end_lon')
             constraint_mode = int(data.get('constraint_mode', 1))
+            preference_mode = int(data.get('preference_mode', 1))  # UPDATE: 新增偏好模式，默认为1
             target_distance = float(data.get('target_distance', 5000))
             distance_tolerance = float(data.get('distance_tolerance', 400))
             target_segments = int(data.get('target_segments', 40))
@@ -820,8 +1201,21 @@ try:
             if end_lon is not None:
                 end_lon = float(end_lon)
             
+            # UPDATE: 参数验证扩展到6种约束模式和7种偏好模式
+            if constraint_mode not in range(1, 7):
+                return jsonify({
+                    'success': False,
+                    'error': 'constraint_mode必须在1-6之间'
+                }), 400
+                
+            if preference_mode not in range(1, 8):
+                return jsonify({
+                    'success': False,
+                    'error': 'preference_mode必须在1-7之间'
+                }), 400
+            
             # 执行路径规划
-            logger.info(f"API请求路径规划: start=({start_lat}, {start_lon}), end=({end_lat}, {end_lon})")
+            logger.info(f"API请求路径规划: start=({start_lat}, {start_lon}), end=({end_lat}, {end_lon}), constraint_mode={constraint_mode}, preference_mode={preference_mode}")
             
             result = plan_jogging_route(
                 start_lat=start_lat,
@@ -829,6 +1223,7 @@ try:
                 end_lat=end_lat,
                 end_lon=end_lon,
                 constraint_mode=constraint_mode,
+                preference_mode=preference_mode,  # UPDATE: 添加偏好模式参数
                 target_distance=target_distance,
                 distance_tolerance=distance_tolerance,
                 target_segments=target_segments,
@@ -943,4 +1338,4 @@ except ImportError:
 
 # 使用示例
 if __name__ == "__main__":
-   test()
+   test(3)
