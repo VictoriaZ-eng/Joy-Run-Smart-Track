@@ -40,6 +40,7 @@ def fetch_and_store_weather():
     if last_time:
         last_time = last_time[0]
         if now - last_time < timedelta(minutes=30):
+            print("天气时最新的，未超过30分钟，不更新")
             need_update = False
     if need_update:
         api_key = fetch_api_key()
@@ -60,6 +61,7 @@ def fetch_and_store_weather():
                     cast['daypower'], cast['nightpower'], float(cast['daytemp_float']), float(cast['nighttemp_float'])
                 ))
             conn.commit()
+            print("天气成功更新")
     cur.close()
     conn.close()
 

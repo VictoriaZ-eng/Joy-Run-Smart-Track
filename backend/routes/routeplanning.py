@@ -1,970 +1,1369 @@
-from flask import Blueprint, jsonify, request, send_file
 import psycopg2
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import io
-import random
-import os
-import time
-from scipy.sparse import csr_matrix
-from collections import deque
-import matplotlib.patches as mpatches
-import matplotlib
-import yaml
+from typing import Tuple, List, Dict, Optional, Union
 import json
+import logging
+import yaml
+import os
 from datetime import datetime
+from dataclasses import dataclass
+from enum import Enum
 
-routeplanning_bp = Blueprint('routeplanning', __name__)
-# 设置matplotlib支持中文显示
-matplotlib.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
-matplotlib.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
-matplotlib.use('Agg')
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# 加载配置
-def load_config():
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yaml')
-    try:
-        with open(config_path, 'r', encoding='utf-8') as file:
-            config = yaml.safe_load(file)
-        return config
-    except Exception as e:
-        print(f"加载配置文件失败: {e}")
-        return {"route_planning_temp_folder": "./temp"}
-
-# 确保临时文件夹存在
-def ensure_temp_folder(folder_path):
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path)
-    return folder_path
-
+# 数据库配置
 DB_CONFIG = {
     'host': 'localhost',
     'port': 5432,
-    'database': 'joy_run_db',
+    # 'database': 'joy_run_db',
+    'database': 'postgres',
     'user': 'postgres',
-    'password': 'postgres1'
+    # 'password': 'postgres1'
+    'password': 'zzq12'   
 }
 
-def get_db_connection():
-    conn = psycopg2.connect(**DB_CONFIG)
-    return conn
+class ConstraintMode(Enum):
+    """约束模式枚举 - UPDATE: 扩展到6个模式（来自modified-3.m）"""
+    DISTANCE_WITH_END = 1      # 有终点，距离约束
+    SEGMENTS_WITH_END = 2      # 有终点，路段数约束  
+    DISTANCE_NO_END = 3        # 无终点，距离约束
+    SEGMENTS_NO_END = 4        # 无终点，路段数约束
+    SHORTEST_PATH = 5          # 有终点，最短距离（无约束）
+    MIN_SEGMENTS_PATH = 6      # 有终点，最少路段数（无约束）
 
-def fetch_road_network():
-    """从数据库获取路网数据"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # 获取边数据
-    cursor.execute("""
-        SELECT id, startx, starty, endx, endy, distance, score, total, dis_ori, 
-               toatl_ori1, source, target
-        FROM edges
-    """)
-    edges_data = cursor.fetchall()
-    
-    # 获取节点数据
-    cursor.execute("SELECT id, x, y FROM nodes")
-    nodes_data = cursor.fetchall()
-    
-    cursor.close()
-    conn.close()
-    
-    # 转换为DataFrame
-    edges_df = pd.DataFrame(edges_data, columns=[
-        'id', 'startx', 'starty', 'endx', 'endy', 'distance', 'score', 
-        'total', 'dis_ori', 'toatl_ori1', 'source', 'target'
-    ])
-    
-    nodes_df = pd.DataFrame(nodes_data, columns=['id', 'x', 'y'])
-    
-    return edges_df, nodes_df
+class PreferenceMode(Enum):
+    """偏好模式枚举 - UPDATE: 新增偏好系统（来自modified-3.m）"""
+    COMPREHENSIVE = 1          # 综合得分（原Total）
+    WATERFRONT = 2            # 滨水路线（Water_Mtotal）
+    GREEN = 3                 # 高绿化路线（NDVI_Mtotal + GVI_Mtotal）
+    OPEN_VIEW = 4             # 视野开阔路线（SVI_Mtotal + Buildng_Mtotal）
+    WELL_LIT = 5              # 夜间灯光充足路线（light_Mtotal）
+    FACILITIES = 6            # 设施便利路线（POI_Mtotal）
+    GENTLE_SLOPE = 7          # 坡度平缓路线（slope_Mtotal）
 
-def dijkstra_single_source(dist_mat, start_node):
-    """单源Dijkstra算法"""
-    num_nodes = dist_mat.shape[0]
-    dist = np.full(num_nodes, np.inf)
-    prev = np.zeros(num_nodes, dtype=int)
-    visited = np.zeros(num_nodes, dtype=bool)
+@dataclass
+class RouteParams:
+    """路径规划参数 - UPDATE: 添加偏好模式支持（来自modified-3.m）"""
+    start_lat: float
+    start_lon: float
+    end_lat: Optional[float] = None
+    end_lon: Optional[float] = None
+    constraint_mode: ConstraintMode = ConstraintMode.DISTANCE_WITH_END
+    preference_mode: PreferenceMode = PreferenceMode.COMPREHENSIVE  # UPDATE: 新增偏好模式
     
-    dist[start_node] = 0
+    # 权重参数
+    w1: float = 1.0    # Total的权重
+    w2: float = 0.0    # 长度权重 (w2>0且w3=0时使用)
+    w3: float = 1.0    # 路段数权重 (w3>0且w2=0时使用)
     
-    for _ in range(num_nodes):
-        # 找最小未访问节点
-        min_dist = np.inf
-        u = -1
-        for j in range(num_nodes):
-            if not visited[j] and dist[j] < min_dist:
-                min_dist = dist[j]
-                u = j
-        
-        if u == -1:
-            break  # 所有连通点都找完了
-        
-        visited[u] = True
-        
-        for v in range(num_nodes):
-            if dist_mat[u, v] < np.inf and not visited[v]:
-                alt = dist[u] + dist_mat[u, v]
-                if alt < dist[v]:
-                    dist[v] = alt
-                    prev[v] = u
+    # 距离约束参数
+    target_distance: float = 5000  # 目标距离(米)
+    distance_tolerance: float = 400 # 距离容差
     
-    return dist, prev
+    # 路段数约束参数
+    target_segments: int = 40      # 目标路段数
+    segments_tolerance: int = 5    # 路段数容差
 
-def dijkstra(dist_mat, start_node, end_node):
-    """优化的Dijkstra算法（使用优先队列）"""
-    import heapq
-    
-    num_nodes = dist_mat.shape[0]
-    dist = np.full(num_nodes, np.inf)
-    prev = np.zeros(num_nodes, dtype=int)
-    dist[start_node] = 0
-    
-    # 优先队列存储(距离,节点)对
-    pq = [(0, start_node)]
-    
-    while pq:
-        d, u = heapq.heappop(pq)
-        
-        # 如果已找到终点或者弹出的距离大于已知距离，跳过
-        if u == end_node or d > dist[u]:
-            continue
-        
-        # 只检查有边相连的节点，而不是所有节点
-        neighbors = np.where(dist_mat[u, :] < np.inf)[0]
-        for v in neighbors:
-            alt = dist[u] + dist_mat[u, v]
-            if alt < dist[v]:
-                dist[v] = alt
-                prev[v] = u
-                heapq.heappush(pq, (alt, v))
-    
-    if dist[end_node] == np.inf:
-        raise ValueError('终点不可达')
-    
-    shortest_path = [end_node]
-    while shortest_path[0] != start_node:
-        shortest_path.insert(0, prev[shortest_path[0]])
-    
-    return shortest_path, dist[end_node]
+@dataclass
+class RouteResult:
+    """路径规划结果 - UPDATE: 添加推荐约束范围信息（来自modified-3.m）"""
+    path_nodes: List[int]
+    path_coordinates: List[Tuple[float, float]]
+    total_distance: float
+    total_segments: int
+    total_score: float
+    optimization_ratio: float
+    score_per_meter: float
+    score_per_segment: float
+    geojson: Dict
+    # UPDATE: 新增字段
+    recommended_distances: Optional[List[float]] = None   # 推荐距离范围
+    recommended_segments: Optional[List[int]] = None      # 推荐路段数范围
+    distance_range: Optional[Tuple[float, float]] = None # 有效距离范围
+    segments_range: Optional[Tuple[int, int]] = None     # 有效路段数范围
 
-def bfs_pathword(adj_mat, start_node, end_node):
-    """BFS求起点到终点的最小路段数"""
-    num_nodes = adj_mat.shape[0]
-    path_word = np.full(num_nodes, np.inf)
-    prev = np.zeros(num_nodes, dtype=int)
-    visited = np.zeros(num_nodes, dtype=bool)
+class JoggingPathPlanner:
+    def get_temp_folder(self):
+        """读取config.yaml获取route_planning_temp_folder路径"""
+        config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config.yaml'))
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        temp_folder = config.get('route_planning_temp_folder')
+        if not temp_folder:
+            raise ValueError('config.yaml 未配置 route_planning_temp_folder')
+        return temp_folder
+    """智能慢跑路径规划器"""
     
-    queue = deque([start_node])
-    path_word[start_node] = 0
-    visited[start_node] = True
-    
-    while queue:
-        current_node = queue.popleft()
+    def __init__(self):
+        self.conn = None
+        self.cursor = None
         
-        if current_node == end_node:
-            break
+    def connect(self):
+        """连接数据库"""
+        try:
+            self.conn = psycopg2.connect(**DB_CONFIG)
+            self.cursor = self.conn.cursor()
+            logger.info("数据库连接成功")
+        except Exception as e:
+            logger.error(f"数据库连接失败: {e}")
+            raise
+    
+    def disconnect(self):
+        """断开数据库连接"""
+        if self.cursor:
+            self.cursor.close()
+        if self.conn:
+            self.conn.close()
+        logger.info("数据库连接已断开")
+    
+    def find_nearest_node(self, lat: float, lon: float) -> Tuple[int, float, float]:
+        """
+        查找最近的路网节点，返回节点ID和坐标
+        Args:
+            lat: 纬度
+            lon: 经度
+        Returns:
+            (节点ID, 节点纬度, 节点经度)
+        """
+        sql = """
+        SELECT id, y, x
+        FROM nodesmodified 
+        ORDER BY geom <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)
+        LIMIT 1;
+        """
+        self.cursor.execute(sql, (lon, lat))
+        result = self.cursor.fetchone()
+        if not result:
+            raise ValueError(f"未找到任何路网节点，请检查nodesmodified表是否有数据")
+        node_id, node_lat, node_lon = result
+        return node_id, node_lat, node_lon
+    
+    def validate_params(self, params: RouteParams):
+        """验证参数合法性 - UPDATE: 扩展到6个约束模式和7个偏好模式（来自modified-3.m）"""
+        # 权重参数验证
+        if params.w1 < 0:
+            raise ValueError("w1必须为非负数")
         
-        neighbors = np.where(adj_mat[current_node, :] > 0)[0]
-        for neighbor in neighbors:
-            if not visited[neighbor]:
-                path_word[neighbor] = path_word[current_node] + 1
-                prev[neighbor] = current_node
-                visited[neighbor] = True
-                queue.append(neighbor)
-    
-    if path_word[end_node] == np.inf:
-        return np.inf, []
-    
-    # 回溯路径
-    shortest_path = [end_node]
-    while shortest_path[0] != start_node:
-        shortest_path.insert(0, prev[shortest_path[0]])
-    
-    return path_word[end_node], shortest_path
-
-def bfs_all_pathwords(adj_mat, start_node):
-    """BFS求单源到所有节点的最小路段数"""
-    num_nodes = adj_mat.shape[0]
-    path_words = np.full(num_nodes, np.inf)
-    visited = np.zeros(num_nodes, dtype=bool)
-    
-    queue = deque([start_node])
-    path_words[start_node] = 0
-    visited[start_node] = True
-    
-    while queue:
-        current_node = queue.popleft()
+        if not ((params.w2 > 0 and params.w3 == 0) or (params.w2 == 0 and params.w3 > 0)):
+            raise ValueError("w2和w3必须一正一零（w2>0用长度，w3>0用路段数）")
         
-        neighbors = np.where(adj_mat[current_node, :] > 0)[0]
-        for neighbor in neighbors:
-            if not visited[neighbor]:
-                path_words[neighbor] = path_words[current_node] + 1
-                visited[neighbor] = True
-                queue.append(neighbor)
-    
-    return path_words
-
-def ant_colony_optimization(start_node, end_node, num_ants=20, max_iter=80, 
-                            min_path_length=10000, max_path_length=11000,
-                            min_path_word=50, max_path_word=60, w0=0, w1=1, w2=0, w3=1,
-                            dij=0, bfs=0, limit=0, max_time=30):
-    """蚁群算法主函数"""
-    # 获取路网数据
-    data, _ = fetch_road_network()
-    
-    # 参数设置
-    alpha = None  # 信息素重要程度
-    beta = 1      # 启发因子重要程度
-    rho = 0.3     # 信息素挥发率
-    lambda_val = 0.98
-    rho_min = 0.05
-    
-    # 权重检查和调整
-    if w1 != 1 and w1 != 0:
-        raise ValueError("w1 要等于0或1")
-    
-    if (w2 == 0 and w3 == 0) or (w2 != 0 and w3 != 0):
-        raise ValueError("w2 和 w3 必须有一个为零，另一个为非零")
-    
-    # 信息素权重调整
-    if w2 != 0 and w3 == 0 and w1 == 1:
-        alpha = 6.5
-    elif w3 != 0 and w2 == 0 and w1 == 1:
-        alpha = 2.5
-    elif w1 == 0:
-        alpha = 2.5
-        rho = 0.1
-    
-    # 提取数据
-    start_x = data['startx'].values
-    start_y = data['starty'].values
-    end_x = data['endx'].values
-    end_y = data['endy'].values
-    
-    if w0 == 1 or w0 == 0:
-        distance = data['distance'].values
-    elif w0 == 2:
-        distance = data['dij_w1'].values
-        print('先前的"道路长度"的分母部分替换为为"道路得分取反"')
-    
-    score = data['score'].values
-    
-    if w0 == 1:
-        total = data['score'].values
-        print('分子为"道路得分"')
-    elif w0 == 0:
-        if w1 == 1:
-            total = data['total'].values
-            if w2 == 0:
-                c = 'b'
-                print('模式b')
-            elif w3 == 0:
-                c = 'a'
-                print('模式a')
-        elif w1 == 0:
-            if w2 == 0:
-                total = np.ones_like(data['total'].values)
-                print('模式d')
-            elif w3 == 0:
-                total = 1.0 / data['distance'].values
-                print('模式c')
-    elif w0 == 2:
-        total = data['total'].values
-        print('分子默认为1')
-    
-    distance_real = data['dis_ori'].values
-    total_real = data['toatl_ori1'].values
-    
-    # 构建节点列表和邻接矩阵
-    all_nodes = np.vstack((np.column_stack((start_x, start_y)), np.column_stack((end_x, end_y))))
-    unique_nodes, inverse = np.unique(all_nodes, axis=0, return_inverse=True)
-    num_nodes = len(unique_nodes)
-    
-    adj_mat = np.zeros((num_nodes, num_nodes))
-    score_mat = np.zeros((num_nodes, num_nodes))
-    total_mat = np.zeros((num_nodes, num_nodes))
-    adj_mat_real = np.zeros((num_nodes, num_nodes))
-    total_mat_real = np.zeros((num_nodes, num_nodes))
-    
-    for i in range(len(data)):
-        start_idx = np.where(np.all(unique_nodes == [start_x[i], start_y[i]], axis=1))[0][0]
-        end_idx = np.where(np.all(unique_nodes == [end_x[i], end_y[i]], axis=1))[0][0]
+        # UPDATE: 约束模式验证（扩展到1-6）
+        if not isinstance(params.constraint_mode, ConstraintMode):
+            raise ValueError("constraintMode必须为1-6")
         
-        adj_mat[start_idx, end_idx] = distance[i]
-        adj_mat[end_idx, start_idx] = distance[i]  # 双向道路
+        # UPDATE: 偏好模式验证（新增1-7）
+        if not isinstance(params.preference_mode, PreferenceMode):
+            raise ValueError("preferenceMode必须为1-7")
         
-        adj_mat_real[start_idx, end_idx] = distance_real[i]
-        adj_mat_real[end_idx, start_idx] = distance_real[i]
-        
-        score_mat[start_idx, end_idx] = score[i]
-        score_mat[end_idx, start_idx] = score[i]
-        
-        total_mat[start_idx, end_idx] = total[i]
-        total_mat[end_idx, start_idx] = total[i]
-        
-        total_mat_real[start_idx, end_idx] = total_real[i]
-        total_mat_real[end_idx, start_idx] = total_real[i]
+        # UPDATE: 终点验证（模式1,2,5,6需要终点）
+        if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END, 
+                                    ConstraintMode.SHORTEST_PATH, ConstraintMode.MIN_SEGMENTS_PATH]:
+            if params.end_lat is None or params.end_lon is None:
+                raise ValueError("模式1,2,5,6需要提供终点坐标")
     
-    # 计算平均值
-    total_mean = np.mean(total)
-    dis_mean = np.mean(distance)
+    def get_preference_total_column(self, preference_mode: PreferenceMode) -> str:
+        """根据偏好模式获取对应的Total列名 - UPDATE: 新增偏好系统（来自modified-3.m）"""
+        column_mapping = {
+            PreferenceMode.COMPREHENSIVE: "total",           # 综合得分（原Total）
+            PreferenceMode.WATERFRONT: "water_mtotal",       # 滨水路线
+            PreferenceMode.GREEN: "ndvi_mtotal + COALESCE(gvi_mtotal, 0)",  # UPDATE: 修复组合字段语法
+            PreferenceMode.OPEN_VIEW: "svi_mtotal + COALESCE(buildng_mtotal, 0)", # UPDATE: 修复组合字段语法
+            PreferenceMode.WELL_LIT: "light_mtotal",         # 夜间灯光充足路线
+            PreferenceMode.FACILITIES: "poi_mtotal",         # 设施便利路线
+            PreferenceMode.GENTLE_SLOPE: "slope_mtotal"      # 坡度平缓路线
+        }
+        return column_mapping[preference_mode]
     
-    # 迭代剔除度为1的节点
-    has_nodes_to_remove = True
-    iteration = 0
+    def calculate_dynamic_constraints(self, start_node: int, end_node: Optional[int], 
+                                    constraint_mode: ConstraintMode) -> Dict:
+        """动态计算约束范围并生成推荐值 - UPDATE: 新增动态约束计算（来自modified-3.m）"""
+        if constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.DISTANCE_NO_END]:
+            # 距离约束的动态计算
+            if constraint_mode == ConstraintMode.DISTANCE_WITH_END and end_node is not None:
+                # 有终点：计算起点+终点到所有节点的总距离
+                sql = """
+                WITH start_distances AS (
+                    SELECT end_vid as node_id, sum(cost) as dist_from_start
+                    FROM pgr_dijkstra(
+                        'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                        %s, 
+                        (SELECT array_agg(id) FROM nodesmodified),
+                        directed := false
+                    ) GROUP BY end_vid
+                ),
+                end_distances AS (
+                    SELECT end_vid as node_id, sum(cost) as dist_to_end  
+                    FROM pgr_dijkstra(
+                        'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                        %s,
+                        (SELECT array_agg(id) FROM nodesmodified), 
+                        directed := false
+                    ) GROUP BY end_vid
+                )
+                SELECT min(s.dist_from_start + e.dist_to_end) as min_dist, 
+                       max(s.dist_from_start + e.dist_to_end) as max_dist
+                FROM start_distances s
+                JOIN end_distances e ON s.node_id = e.node_id;
+                """
+                self.cursor.execute(sql, (start_node, end_node))
+            else:
+                # 无终点：计算起点到所有节点的累积距离
+                sql = """
+                SELECT min(agg_cost), max(agg_cost)
+                FROM pgr_dijkstra(
+                    'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                    %s,
+                    (SELECT array_agg(id) FROM nodesmodified WHERE id != %s),
+                    directed := false
+                ) WHERE agg_cost < 'Infinity'::float AND agg_cost > 0;
+                """
+                self.cursor.execute(sql, (start_node, start_node))
+            
+            result = self.cursor.fetchone()
+            if not result or result[0] is None:
+                raise ValueError("无法计算有效距离范围，请检查路网数据")
+            
+            min_dist, max_dist = result
+            distance_step = 500  # 500米间隔
+            
+            # 生成推荐距离（向上取整到步长倍数）
+            min_recommended = int(np.ceil(min_dist / distance_step) * distance_step)
+            max_recommended = int(np.floor(max_dist / distance_step) * distance_step)
+            
+            if min_recommended > max_recommended:
+                recommended_distances = [min_recommended]
+            else:
+                recommended_distances = list(range(min_recommended, max_recommended + 1, distance_step))
+            
+            return {
+                'type': 'distance',
+                'min_value': min_dist,
+                'max_value': max_dist,
+                'recommended_values': recommended_distances,
+                'step': distance_step,
+                'unit': 'meters'
+            }
+            
+        else:  # 路段数约束
+            if constraint_mode == ConstraintMode.SEGMENTS_WITH_END and end_node is not None:
+                # 有终点：使用递归CTE计算路段数范围（简化版BFS）
+                sql = """
+                WITH RECURSIVE segments_calc AS (
+                    SELECT source, target, 1 as segments
+                    FROM edgesmodified
+                    WHERE source = %s OR target = %s
+                    UNION ALL
+                    SELECT e.source, e.target, s.segments + 1
+                    FROM segments_calc s
+                    JOIN edgesmodified e ON (e.source = s.target OR e.target = s.source)
+                    WHERE s.segments < 50  -- 限制递归深度
+                )
+                SELECT min(segments), max(segments)
+                FROM segments_calc
+                WHERE source = %s OR target = %s;
+                """
+                self.cursor.execute(sql, (start_node, start_node, end_node, end_node))
+            else:
+                # 无终点：单源路段数计算
+                sql = """
+                WITH RECURSIVE segments_calc AS (
+                    SELECT target as node_id, 1 as segments
+                    FROM edgesmodified
+                    WHERE source = %s
+                    UNION ALL
+                    SELECT e.target, s.segments + 1
+                    FROM segments_calc s
+                    JOIN edgesmodified e ON e.source = s.node_id
+                    WHERE s.segments < 50 AND s.node_id != %s
+                )
+                SELECT min(segments), max(segments)
+                FROM segments_calc;
+                """
+                self.cursor.execute(sql, (start_node, start_node))
+            
+            result = self.cursor.fetchone()
+            if not result or result[0] is None:
+                raise ValueError("无法计算有效路段数范围，请检查路网数据")
+            
+            min_segments, max_segments = result
+            segments_step = 5  # 5段间隔
+            
+            # 生成推荐路段数
+            min_recommended = int(np.ceil(min_segments / segments_step) * segments_step)
+            max_recommended = int(np.floor(max_segments / segments_step) * segments_step)
+            
+            if min_recommended > max_recommended:
+                recommended_segments = [min_recommended]
+            else:
+                recommended_segments = list(range(min_recommended, max_recommended + 1, segments_step))
+            
+            return {
+                'type': 'segments',
+                'min_value': min_segments,
+                'max_value': max_segments,
+                'recommended_values': recommended_segments,
+                'step': segments_step,
+                'unit': 'segments'
+            }
     
-    while has_nodes_to_remove:
-        # 计算节点度数
-        degree = np.sum(adj_mat != 0, axis=1)
-        nodes_to_remove = np.where(degree == 1)[0]
-        
-        if len(nodes_to_remove) == 0:
-            has_nodes_to_remove = False
-            print(f'迭代完成，共执行 {iteration} 次剔除')
-            break
+    def get_constraint_bounds(self, params: RouteParams) -> Tuple[float, float]:
+        """获取约束范围"""
+        if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.DISTANCE_NO_END]:
+            return (
+                params.target_distance - params.distance_tolerance,
+                params.target_distance + params.distance_tolerance
+            )
+        else:  # 路段数约束
+            return (
+                params.target_segments - params.segments_tolerance,
+                params.target_segments + params.segments_tolerance
+            )
+    
+    def filter_valid_nodes_by_distance(self, start_node: int, end_node: Optional[int], 
+                                     min_dist: float, max_dist: float) -> List[int]:
+        """
+        基于距离约束筛选有效节点
+        使用PostGIS的pgr_dijkstra进行高效计算
+        """
+        if end_node is not None:
+            # 有终点模式：筛选满足起点到节点+节点到终点总距离在范围内的节点
+            sql = """
+            WITH start_distances AS (
+                SELECT end_vid as node_id, sum(cost) as dist_from_start
+                FROM pgr_dijkstra(
+                    'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                    %s, 
+                    (SELECT array_agg(id) FROM nodesmodified),
+                    directed := false
+                ) GROUP BY end_vid
+            ),
+            end_distances AS (
+                SELECT end_vid as node_id, sum(cost) as dist_to_end  
+                FROM pgr_dijkstra(
+                    'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                    %s,
+                    (SELECT array_agg(id) FROM nodesmodified), 
+                    directed := false
+                ) GROUP BY end_vid
+            )
+            SELECT s.node_id
+            FROM start_distances s
+            JOIN end_distances e ON s.node_id = e.node_id
+            WHERE (s.dist_from_start + e.dist_to_end) BETWEEN %s AND %s;
+            """
+            self.cursor.execute(sql, (start_node, end_node, min_dist, max_dist))
         else:
-            iteration += 1
-            print(f'第{iteration}次迭代：发现{len(nodes_to_remove)}个度数为1的节点')
+            # 无终点模式：筛选起点到节点累积距离在范围内的节点
+            sql = """
+            SELECT end_vid as node_id
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                %s,
+                (SELECT array_agg(id) FROM nodesmodified WHERE id != %s),
+                directed := false
+            )
+            WHERE agg_cost BETWEEN %s AND %s AND agg_cost > 0;
+            """
+            self.cursor.execute(sql, (start_node, start_node, min_dist, max_dist))
         
-        # 更新保留节点索引
-        remaining_nodes = np.setdiff1d(np.arange(unique_nodes.shape[0]), nodes_to_remove)
-        
-        # 动态更新所有矩阵
-        unique_nodes = unique_nodes[remaining_nodes]
-        adj_mat = adj_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        score_mat = score_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        total_mat = total_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        adj_mat_real = adj_mat_real[np.ix_(remaining_nodes, remaining_nodes)]
-        total_mat_real = total_mat_real[np.ix_(remaining_nodes, remaining_nodes)]
-        num_nodes = len(unique_nodes)
+        return [row[0] for row in self.cursor.fetchall()]
     
-    # 计算有效距离矩阵
-    dist_mat = adj_mat.copy()
-    dist_mat[adj_mat == 0] = np.inf
-    dist_mat[dist_mat == 0] = np.finfo(float).eps  # 避免除以零
+    def filter_valid_nodes_by_segments(self, start_node: int, end_node: Optional[int],
+                                     min_segments: int, max_segments: int) -> List[int]:
+        """
+        基于路段数约束筛选有效节点
+        使用BFS思想，通过hop数限制实现
+        """
+        if end_node is not None:
+            # 有终点模式：使用pgr_withPoints结合距离限制模拟路段数约束
+            sql = """
+            WITH RECURSIVE path_segments AS (
+                -- 起点BFS
+                SELECT %s as node_id, 0 as segments_from_start
+                UNION ALL
+                SELECT e.endx as node_id, p.segments_from_start + 1
+                FROM path_segments p
+                JOIN edgesmodified e ON e.startx = p.node_id
+                WHERE p.segments_from_start < %s
+            ),
+            end_segments AS (
+                -- 终点BFS  
+                SELECT %s as node_id, 0 as segments_to_end
+                UNION ALL
+                SELECT e.startx as node_id, p.segments_to_end + 1
+                FROM end_segments p
+                JOIN edgesmodified e ON e.endx = p.node_id
+                WHERE p.segments_to_end < %s
+            )
+            SELECT DISTINCT s.node_id
+            FROM path_segments s
+            JOIN end_segments e ON s.node_id = e.node_id
+            WHERE (s.segments_from_start + e.segments_to_end) BETWEEN %s AND %s;
+            """
+            self.cursor.execute(sql, (start_node, max_segments, end_node, max_segments, min_segments, max_segments))
+        else:
+            # 无终点模式：单源BFS
+            sql = """
+            WITH RECURSIVE path_segments AS (
+                SELECT %s as node_id, 0 as segments
+                UNION ALL
+                SELECT e.endx as node_id, p.segments + 1
+                FROM path_segments p
+                JOIN edgesmodified e ON e.startx = p.node_id
+                WHERE p.segments < %s
+            )
+            SELECT DISTINCT node_id
+            FROM path_segments
+            WHERE segments BETWEEN %s AND %s;
+            """
+            self.cursor.execute(sql, (start_node, max_segments, min_segments, max_segments))
+        
+        return [row[0] for row in self.cursor.fetchall()]
     
-    dist_mat_real = adj_mat_real.copy()
-    dist_mat_real[adj_mat_real == 0] = np.inf
-    dist_mat_real[dist_mat_real == 0] = np.finfo(float).eps
-    
-    # 确保终点与起点不同
-    while end_node == start_node:
-        end_node = np.random.randint(0, num_nodes)
-    
-    print(f'起点: 节点 {start_node}, 终点: 节点 {end_node}')
-    
-    # 路径约束预处理
-    if dij == 1:
-        print('正在使用dijkstra计算路径长度约束...')
+    def calculate_shortest_path(self, start_node: int, end_node: int, 
+                              constraint_mode: ConstraintMode, params: RouteParams) -> Dict:
+        """计算最短路径（模式5）或最少路段数路径（模式6） - UPDATE: 新增模式5,6支持并修复偏好评分应用（来自modified-3.m）"""
         
-        # 保存原始起点终点坐标
-        start_coord = unique_nodes[start_node]
-        end_coord = unique_nodes[end_node]
+        # UPDATE: 获取偏好模式对应的评分字段
+        preference_column = self.get_preference_total_column(params.preference_mode)
         
-        # 单源Dijkstra
-        start_to_all_dist, _ = dijkstra_single_source(dist_mat_real, start_node)
-        end_to_all_dist, _ = dijkstra_single_source(dist_mat_real, end_node)
-        
-        # 节点筛选
-        valid_node_mask = (start_to_all_dist + end_to_all_dist) <= max_path_length
-        
-        # 强制保留起点和终点
-        valid_node_mask[start_node] = True
-        valid_node_mask[end_node] = True
-        
-        remaining_nodes = np.where(valid_node_mask)[0]
-        
-        # 更新所有矩阵
-        unique_nodes = unique_nodes[remaining_nodes]
-        adj_mat = adj_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        score_mat = score_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        total_mat = total_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        dist_mat = dist_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        dist_mat_real = dist_mat_real[np.ix_(remaining_nodes, remaining_nodes)]
-        adj_mat_real = adj_mat_real[np.ix_(remaining_nodes, remaining_nodes)]
-        total_mat_real = total_mat_real[np.ix_(remaining_nodes, remaining_nodes)]
-        num_nodes = len(unique_nodes)
-        
-        # 重新定位起点和终点
-        start_node = np.where(np.all(unique_nodes == start_coord, axis=1))[0][0]
-        end_node = np.where(np.all(unique_nodes == end_coord, axis=1))[0][0]
-        
-        # 计算最短路径
-        shortest_path, min_dist = dijkstra(dist_mat_real, start_node, end_node)
-        
-        # 检查最短路径是否满足约束
-        if min_path_length < min_dist:
-            raise ValueError('设置的距离范围下限小于最短距离')
-    
-    if bfs == 1:
-        print('正在使用BFS计算路段数约束...')
-        
-        # 保存原始起点终点坐标
-        start_coord = unique_nodes[start_node]
-        end_coord = unique_nodes[end_node]
-        
-        # BFS计算
-        start_to_all_path_words = bfs_all_pathwords(adj_mat_real, start_node)
-        end_to_all_path_words = bfs_all_pathwords(adj_mat_real, end_node)
-        
-        # 路段数约束判断
-        valid_node_mask = (start_to_all_path_words + end_to_all_path_words) <= max_path_word
-        
-        remaining_nodes = np.where(valid_node_mask)[0]
-        
-        # 更新所有矩阵
-        unique_nodes = unique_nodes[remaining_nodes]
-        adj_mat = adj_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        score_mat = score_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        total_mat = total_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        dist_mat = dist_mat[np.ix_(remaining_nodes, remaining_nodes)]
-        dist_mat_real = dist_mat_real[np.ix_(remaining_nodes, remaining_nodes)]
-        adj_mat_real = adj_mat_real[np.ix_(remaining_nodes, remaining_nodes)]
-        total_mat_real = total_mat_real[np.ix_(remaining_nodes, remaining_nodes)]
-        num_nodes = len(unique_nodes)
-        
-        # 重新定位起点和终点
-        start_node = np.where(np.all(unique_nodes == start_coord, axis=1))[0][0]
-        end_node = np.where(np.all(unique_nodes == end_coord, axis=1))[0][0]
-        
-        # 检查最小路段数
-        path_word, shortest_path = bfs_pathword(adj_mat, start_node, end_node)
-        
-        if path_word > max_path_word:
-            raise ValueError('最小路段数大于允许上限，无法继续')
-    
-    # 初始化信息素矩阵
-    pheromone = np.zeros((num_nodes, num_nodes))
-    for i in range(num_nodes):
-        for j in range(num_nodes):
-            if adj_mat[i, j] > 0:
-                pheromone[i, j] = 1
-    
-    # 算法初始化
-    best_path = []
-    best_score_path_ratio = -np.inf
-    iter_best_score_path_ratio = np.zeros(max_iter)
-    iter_best_dist = np.zeros(max_iter)
-    iter_best_scores = np.zeros(max_iter)
-    iter_best_total = np.zeros(max_iter)
-    iter_best_pathword = np.zeros(max_iter)
-    iter_avr_pathscore = np.zeros(max_iter)
-    all_best_dist = np.zeros(max_iter)
-    all_best_scores = np.zeros(max_iter)
-    all_best_score_path_ratio = np.zeros(max_iter)
-    all_best_total = np.zeros(max_iter)
-    all_best_pathword = np.zeros(max_iter)
-    all_avr_pathscore = np.zeros(max_iter)
-    all_avr_disscore = np.zeros(max_iter)
-    all_best_dist_real = np.zeros(max_iter)
-    no_improve_count = 0
-    early_stop_flag = False
-    
-    # 主循环
-    for iter in range(max_iter):
-        rho = max(lambda_val * rho, rho_min)  # 动态降低rho
-        ants_paths = [None] * num_ants
-        ants_dist = np.full(num_ants, np.inf)
-        ants_scores = np.zeros(num_ants)
-        ants_total = np.zeros(num_ants)
-        pathword = np.zeros(num_ants)
-        total_divide_path = np.zeros(num_ants)
-        avr_pathscore = np.zeros(num_ants)
-        avr_disscore = np.zeros(num_ants)
-        ants_total_real = np.zeros(num_ants)
-        ants_dist_real = np.full(num_ants, np.inf)
-        
-        print(f'\n------ 第 {iter+1} 次迭代 ------')
-        
-        # 每只蚂蚁的路径选择
-        for k in range(num_ants):
-            valid_path = False
-            attempts = 0
-            max_attempts = 100
+        if constraint_mode == ConstraintMode.SHORTEST_PATH:
+            # 模式5：最短距离路径 - 考虑偏好评分的权重
+            cost_function = f"CASE WHEN {preference_column} > 0 THEN dis_ori / {preference_column} ELSE dis_ori * 10 END"
             
-            while not valid_path and attempts < max_attempts:
-                try:
-                    current_node = start_node
-                    visited = [current_node]
-                    path = [current_node]
-                    temp_barriers = []
-                    backoff_steps = 0
-                    max_backoff = 50
-                    total_score = 0
-                    total_total = 0
-                    total_dist = 0
-                    path_calcul = 0
-                    total_total_real = 0
-                    total_dist_real = 0
-                    
-                    while current_node != end_node:
-                        neighbors = np.where(adj_mat[current_node, :] > 0)[0]
-                        reachable = np.setdiff1d(neighbors, np.concatenate((visited, temp_barriers)))
-                        
-                        if len(reachable) == 0:
-                            if len(path) == 1 or backoff_steps > max_backoff:
-                                raise ValueError('无法回退，重新构建路径')
-                            
-                            # 回退
-                            temp_barriers.append(current_node)
-                            prev_node = path[-2]
-                            
-                            # 扣除路径累计值
-                            total_score -= score_mat[prev_node, current_node]
-                            total_total -= total_mat[prev_node, current_node]
-                            total_dist -= dist_mat[prev_node, current_node]
-                            total_total_real -= total_mat_real[prev_node, current_node]
-                            total_dist_real -= dist_mat_real[prev_node, current_node]
-                            path_calcul -= 1
-                            
-                            path.pop()
-                            current_node = prev_node
-                            backoff_steps += 1
-                            continue
-                        
-                        # 正常转移
-                        if len(reachable) == 1:
-                            next_node = reachable[0]
-                        else:
-                            probabilities = (pheromone[current_node, reachable]**alpha) * (total_mat[current_node, reachable]**beta)
-                            probabilities = probabilities / np.sum(probabilities)
-                            next_node = np.random.choice(reachable, p=probabilities)
-                        
-                        # 记录
-                        prev_node = current_node
-                        path.append(next_node)
-                        visited.append(next_node)
-                        total_score += score_mat[prev_node, next_node]
-                        total_total += total_mat[prev_node, next_node]
-                        total_dist += dist_mat[prev_node, next_node]
-                        total_total_real += total_mat_real[prev_node, next_node]
-                        total_dist_real += dist_mat_real[prev_node, next_node]
-                        path_calcul += 1
-                        
-                        # 走一步就判断约束
-                        if dij == 1:
-                            if total_dist_real > max_path_length or (total_dist_real < min_path_length and next_node == end_node):
-                                temp_barriers.append(next_node)
-                                total_score -= score_mat[prev_node, next_node]
-                                total_total -= total_mat[prev_node, next_node]
-                                total_dist -= dist_mat[prev_node, next_node]
-                                total_total_real -= total_mat_real[prev_node, next_node]
-                                total_dist_real -= dist_mat_real[prev_node, next_node]
-                                path_calcul -= 1
-                                
-                                path.pop()
-                                current_node = prev_node
-                                backoff_steps += 1
-                                continue
-                        elif bfs == 1:
-                            if path_calcul > max_path_word or (path_calcul < min_path_word and next_node == end_node):
-                                temp_barriers.append(next_node)
-                                total_score -= score_mat[prev_node, next_node]
-                                total_total -= total_mat[prev_node, next_node]
-                                total_dist -= dist_mat[prev_node, next_node]
-                                total_total_real -= total_mat_real[prev_node, next_node]
-                                total_dist_real -= dist_mat_real[prev_node, next_node]
-                                path_calcul -= 1
-                                
-                                path.pop()
-                                current_node = prev_node
-                                backoff_steps += 1
-                                continue
-                        
-                        # 正常前进
-                        current_node = next_node
-                        backoff_steps = 0  # 成功前进就重置
-                    
-                    # 到终点后额外校验约束
-                    if dij == 1:
-                        if total_dist_real >= min_path_length and total_dist_real <= max_path_length:
-                            valid_path = True
-                        else:
-                            raise ValueError('路径长度不符合约束')
-                    elif bfs == 1:
-                        if path_calcul >= min_path_word and path_calcul <= max_path_word:
-                            valid_path = True
-                        else:
-                            raise ValueError('路段数不符合约束')
-                    else:
-                        valid_path = True
-                
-                except Exception as e:
-                    attempts += 1
-                    continue
+            sql = f"""
+            SELECT 
+                array_agg(node ORDER BY seq) as path_nodes,
+                sum(cost) as total_distance,
+                count(*) as total_segments
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, {cost_function} as cost, {cost_function} as reverse_cost FROM edgesmodified',
+                %s, %s, directed := false
+            );
+            """
+            self.cursor.execute(sql, (start_node, end_node))
             
-            if not valid_path:
-                print(f"蚂蚁 {k}: 在 {max_attempts} 次尝试后仍未找到有效路径")
+        elif constraint_mode == ConstraintMode.MIN_SEGMENTS_PATH:
+            # 模式6：最少路段数路径 - 同时考虑偏好评分
+            sql = f"""
+            SELECT 
+                array_agg(node ORDER BY seq) as path_nodes,
+                count(*) as total_segments,
+                sum(cost) as total_distance
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, 1 as cost, 1 as reverse_cost FROM edgesmodified',
+                %s, %s, directed := false
+            ) a
+            JOIN edgesmodified b ON a.edge = b.id;
+            """
+            self.cursor.execute(sql, (start_node, end_node))
+        
+        result = self.cursor.fetchone()
+        if not result or not result[0]:
+            raise ValueError("起点到终点无可达路径")
+        
+        path_nodes, segments_or_distance, distance_or_segments = result
+        
+        if constraint_mode == ConstraintMode.SHORTEST_PATH:
+            total_distance = segments_or_distance
+            total_segments = distance_or_segments
+        else:  # MIN_SEGMENTS_PATH
+            total_segments = segments_or_distance
+            total_distance = distance_or_segments
+            
+        # UPDATE: 计算路径的偏好得分和综合评价
+        edges_from_path = []
+        for i in range(len(path_nodes) - 1):
+            src_node = path_nodes[i]
+            tgt_node = path_nodes[i + 1]
+            edges_from_path.append(f"(source = {src_node} AND target = {tgt_node}) OR (source = {tgt_node} AND target = {src_node})")
+        
+        if edges_from_path:
+            edges_condition = " OR ".join(edges_from_path)
+            sql = f"""
+            SELECT 
+                sum(score) as total_score,
+                sum({preference_column}) as total_preference_score,
+                sum(dis_ori) as actual_distance
+            FROM edgesmodified 
+            WHERE {edges_condition};
+            """
+            self.cursor.execute(sql)
+            score_result = self.cursor.fetchone()
+            total_score = score_result[0] if score_result[0] else 0
+            total_preference_score = score_result[1] if score_result[1] else 0
+            actual_distance = score_result[2] if score_result[2] else total_distance
+        else:
+            total_score = 0
+            total_preference_score = 0
+            actual_distance = total_distance
+        
+        # UPDATE: 使用偏好评分计算优化比值
+        if params.w2 > 0:  # 使用长度权重
+            ratio = (total_preference_score ** params.w1) / (actual_distance ** params.w2) if actual_distance > 0 else 0
+        else:  # 使用路段数权重
+            ratio = (total_preference_score ** params.w1) / (total_segments ** params.w3) if total_segments > 0 else 0
+        
+        return {
+            'node_id': -1,  # 标识为直接路径
+            'path_nodes': path_nodes,
+            'preference_total': total_preference_score,  # UPDATE: 添加偏好总分
+            'dist_real': actual_distance,
+            'segments': total_segments, 
+            'score': total_score,
+            'ratio': ratio,
+            'score_per_meter': total_preference_score / actual_distance if actual_distance > 0 else 0,
+            'score_per_segment': total_preference_score / total_segments if total_segments > 0 else 0
+        }
+    
+    def calculate_path_metrics(self, start_node: int, end_node: Optional[int], 
+                             valid_nodes: List[int], params: RouteParams) -> List[Dict]:
+        """
+        计算所有有效节点的路径指标 - UPDATE: 修复偏好模式在有终点约束时不生效的问题
+        使用SQL批量计算提高效率，并正确应用偏好评分
+        """
+        metrics = []
+        
+        # UPDATE: 获取偏好模式对应的评分字段
+        preference_column = self.get_preference_total_column(params.preference_mode)
+        
+        # 构建有效节点的WHERE子句
+        valid_nodes_str = ','.join(map(str, valid_nodes))
+        
+        if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END]:
+            # UPDATE: 有终点模式 - 修复偏好评分计算
+            # 使用偏好评分作为路径权重，而不是固定的distance
+            cost_function = f"CASE WHEN {preference_column} > 0 THEN dis_ori / {preference_column} ELSE dis_ori * 10 END"
+            
+            sql = f"""
+            WITH start_paths AS (
+                SELECT 
+                    end_vid as mid_node,
+                    sum(cost) as dist_std_to_mid,
+                    sum(b.dis_ori) as dist_real_to_mid,
+                    count(*) as segments_to_mid,
+                    sum(b.{preference_column}) as preference_score_to_mid,
+                    sum(b.total) as total_std_to_mid,
+                    sum(b.score) as score_to_mid
+                FROM pgr_dijkstra(
+                    'SELECT id, source, target, {cost_function} as cost, {cost_function} as reverse_cost FROM edgesmodified', 
+                    %s, 
+                    ARRAY[{valid_nodes_str}], 
+                    directed := false
+                ) a
+                JOIN edgesmodified b ON a.edge = b.id
+                WHERE end_vid IN ({valid_nodes_str})
+                GROUP BY end_vid
+            ),
+            end_paths AS (
+                SELECT 
+                    end_vid as mid_node,
+                    sum(cost) as dist_std_from_mid, 
+                    sum(b.dis_ori) as dist_real_from_mid,
+                    count(*) as segments_from_mid,
+                    sum(b.{preference_column}) as preference_score_from_mid,
+                    sum(b.total) as total_std_from_mid,
+                    sum(b.score) as score_from_mid
+                FROM pgr_dijkstra(
+                    'SELECT id, source, target, {cost_function} as cost, {cost_function} as reverse_cost FROM edgesmodified',
+                    %s,
+                    ARRAY[{valid_nodes_str}], 
+                    directed := false
+                ) a
+                JOIN edgesmodified b ON a.edge = b.id  
+                WHERE end_vid IN ({valid_nodes_str})
+                GROUP BY end_vid
+            )
+            SELECT 
+                s.mid_node,
+                (s.preference_score_to_mid + e.preference_score_from_mid) as preference_total,
+                (s.total_std_to_mid + e.total_std_from_mid) as total_std,
+                (s.dist_std_to_mid + e.dist_std_from_mid) as dist_std, 
+                (s.segments_to_mid + e.segments_from_mid) as segments,
+                (s.dist_real_to_mid + e.dist_real_from_mid) as dist_real,
+                (s.score_to_mid + e.score_from_mid) as score
+            FROM start_paths s
+            JOIN end_paths e ON s.mid_node = e.mid_node
+            WHERE s.mid_node != %s AND s.mid_node != %s;
+            """
+            
+            self.cursor.execute(sql, (start_node, end_node, start_node, end_node))
+        else:
+            # UPDATE: 无终点模式 - 修复偏好评分计算
+            cost_function = f"CASE WHEN {preference_column} > 0 THEN dis_ori / {preference_column} ELSE dis_ori * 10 END"
+            
+            sql = f"""
+            SELECT 
+                end_vid as node_id,
+                sum(b.{preference_column}) as preference_total,
+                sum(b.total) as total_std,
+                sum(cost) as dist_std,
+                count(*) as segments, 
+                sum(b.dis_ori) as dist_real,
+                sum(b.score) as score
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, {cost_function} as cost, {cost_function} as reverse_cost FROM edgesmodified',
+                %s,
+                ARRAY[{valid_nodes_str}],
+                directed := false
+            ) a
+            JOIN edgesmodified b ON a.edge = b.id
+            WHERE end_vid IN ({valid_nodes_str}) AND end_vid != %s
+            GROUP BY end_vid;
+            """
+            
+            self.cursor.execute(sql, (start_node, start_node))
+        
+        results = self.cursor.fetchall()
+        
+        # 计算约束范围
+        min_constraint, max_constraint = self.get_constraint_bounds(params)
+        
+        for row in results:
+            if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END]:
+                node_id, preference_total, total_std, dist_std, segments, dist_real, score = row
+            else:
+                node_id, preference_total, total_std, dist_std, segments, dist_real, score = row
+            
+            # 约束检查
+            constraint_value = dist_real if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.DISTANCE_NO_END] else segments
+            if not (min_constraint <= constraint_value <= max_constraint):
                 continue
             
-            # 记录结果
-            ants_paths[k] = path
-            ants_dist[k] = total_dist
-            ants_scores[k] = total_score
-            ants_total[k] = total_total
-            pathword[k] = path_calcul
-            ants_total_real[k] = total_total_real
-            ants_dist_real[k] = total_dist_real
-            
-            avr_disscore[k] = ants_total[k] / ants_dist[k]
-            avr_pathscore[k] = ants_total[k] / pathword[k]
-            
-            if w1 == 0:
-                if w2 > 0:
-                    total_divide_path[k] = 1/ants_dist[k]
-                else:
-                    total_divide_path[k] = 1/pathword[k]
-            else:  # w1 > 0
-                if w2 > 0:
-                    total_divide_path[k] = (ants_total[k]**w1)/(ants_dist[k]**w2)
-                else:
-                    total_divide_path[k] = (ants_total[k]**w1)/(pathword[k]**w3)
-            
-            print(f'蚂蚁 {k}: 路径长度（标准化后）= {ants_dist[k]:.2f}, 路径长度（标准化前）= {ants_dist_real[k]:.2f}, 总得分 = {ants_scores[k]:.2f}, 慢跑可持续性（标准化后）= {ants_total[k]:.2f}, 慢跑可持续性（标准化前）= {ants_total_real[k]:.2f}, 总路段数 = {pathword[k]:.2f}, joggability = {total_divide_path[k]:.2f}')
-        
-        # 更新最优路径
-        valid_ants = np.where(~np.isinf(ants_dist))[0]
-        if len(valid_ants) == 0:
-            print("本次迭代没有找到有效路径，跳过更新")
-            continue
-            
-        ants_score_path_ratio = total_divide_path[valid_ants]
-        
-        # 找到得分与道路数量比值最大的蚂蚁
-        max_score_path_ratio_idx = np.argmax(ants_score_path_ratio)
-        max_score_path_ratio = ants_score_path_ratio[max_score_path_ratio_idx]
-        idx = valid_ants[max_score_path_ratio_idx]
-        
-        iter_best_score_path_ratio[iter] = max_score_path_ratio
-        iter_best_scores[iter] = ants_scores[idx]
-        iter_best_dist[iter] = ants_dist[idx]
-        iter_best_total[iter] = ants_total[idx]
-        iter_best_pathword[iter] = pathword[idx]
-        iter_best_path = ants_paths[idx]
-        iter_avr_pathscore[iter] = avr_pathscore[idx]
-        
-        print(f'迭代 {iter+1}: 当前迭代最优joggability = {max_score_path_ratio:.4f}, 最优路径的得分 = {iter_best_scores[iter]:.2f}, 最优路径的长度 = {iter_best_dist[iter]:.2f}, 最优路径的Total = {iter_best_total[iter]:.2f}, 最优路径的路段数 = {iter_best_pathword[iter]:.2f}, 平均道路得分 = {iter_avr_pathscore[iter]:.2f}')
-        
-        # 更新全局最优
-        if max_score_path_ratio > best_score_path_ratio:
-            best_score_path_ratio = max_score_path_ratio
-            best_path = ants_paths[idx].copy()
-            best_scores = ants_scores[idx]
-            best_dist = ants_dist[idx]
-            best_total = ants_total[idx]
-            best_pathword = pathword[idx]
-            best_avr_pathscore = avr_pathscore[idx]
-            best_avr_disscore = avr_disscore[idx]
-            best_dist_real = ants_dist_real[idx]
-        
-        all_best_score_path_ratio[iter] = best_score_path_ratio
-        all_best_scores[iter] = best_scores
-        all_best_dist[iter] = best_dist
-        all_best_total[iter] = best_total
-        all_best_pathword[iter] = best_pathword
-        all_avr_pathscore[iter] = best_avr_pathscore
-        all_avr_disscore[iter] = best_avr_disscore
-        all_best_dist_real[iter] = best_dist_real
-        
-        # 信息素更新
-        pheromone = (1 - rho) * pheromone
-        
-        # 标记最优路径的边
-        path_edges = np.zeros_like(pheromone, dtype=bool)
-        for i in range(len(best_path)-1):
-            from_node = best_path[i]
-            to_node = best_path[i+1]
-            path_edges[from_node, to_node] = True
-        
-        # 更新最优路径上的信息素
-        for i in range(len(best_path)-1):
-            from_node = best_path[i]
-            to_node = best_path[i+1]
-            original = pheromone[from_node, to_node]
-            
-            if w2 == 0:
-                if w1 == 1:
-                    delta = all_avr_pathscore[iter] / total_mean
-                    pheromone[from_node, to_node] += delta
-                    print(f'1信息素增加{delta:.4f}，该道路原始信息素为{original:.4f}，更新后为{pheromone[from_node, to_node]:.4f}')
-                elif w1 == 0:
-                    delta = 1 * all_best_score_path_ratio[iter]
-                    pheromone[from_node, to_node] += delta
-                    print(f'2信息素增加{delta:.4f}，该道路原始信息素为{original:.4f}，更新后为{pheromone[from_node, to_node]:.4f}')
-            elif w3 == 0:
-                if w1 == 1:
-                    delta = (dis_mean * all_avr_disscore[iter]) / total_mean
-                    pheromone[from_node, to_node] += delta
-                    print(f'3信息素增加{delta:.4f}，该道路原始信息素为{original:.4f}，更新后为{pheromone[from_node, to_node]:.4f}')
-                elif w1 == 0:
-                    delta = 1 * all_best_score_path_ratio[iter]
-                    pheromone[from_node, to_node] += delta
-                    print(f'4信息素增加{delta:.4f}，该道路原始信息素为{original:.4f}，更新后为{pheromone[from_node, to_node]:.4f}')
-        
-        if w1 == 1:
-            # 对非最优路径上的路段增加基础信息素
-            # for from_node in range(pheromone.shape[0]):
-            #     for to_node in range(pheromone.shape[1]):
-            #         if not path_edges[from_node, to_node] and pheromone[from_node, to_node] > 0:
-            #             pheromone[from_node, to_node] += 1
-            mask = (~path_edges) & (pheromone > 0)
-            pheromone[mask] += 1
-        
-        # 状态输出
-        print(f'迭代 {iter+1}: 信息素范围 = [{np.min(pheromone[pheromone>0]):.5f}, {np.max(pheromone):.5f}], total范围 = [{np.min(total_mat[total_mat>0]):.5f}, {np.max(total_mat):.5f}], total平均值 = {total_mean:.2f}, distance平均值 = {dis_mean:.2f}, 此时rho = {rho:.2f}, 此时alpha = {alpha:.2f}')
-        print('===================================================================================')
-        print(f'迭代 {iter+1}: 全局平均每段道路可慢跑持续性 = {all_avr_pathscore[iter]:.4f}, 全局平均每米可慢跑持续性 = {all_avr_disscore[iter]:.4f}, 当前全局joggability = {all_best_score_path_ratio[iter]:.6f}, 全局最优路径的总得分 = {all_best_scores[iter]:.4f}, \n 全局最优路径的总长度（标准化后）= {all_best_dist[iter]:.4f}, 全局最优路径的总长度（标准化前）= {all_best_dist_real[iter]:.4f}, 全局最优路径的总可慢跑持续得分 = {all_best_total[iter]:.4f}, 全局最优路径的总路段数 = {all_best_pathword[iter]:.2f}')
-        
-        # 早停条件判断
-        if limit == 1 and iter >= 1:
-            if abs(all_best_score_path_ratio[iter] - all_best_score_path_ratio[iter-1]) < 1e-6:
-                no_improve_count += 1
+            # UPDATE: 使用偏好评分计算优化比值
+            if params.w2 > 0 and dist_std > 0:
+                ratio = (preference_total ** params.w1) / (dist_std ** params.w2)
+            elif params.w3 > 0 and segments > 0:
+                ratio = (preference_total ** params.w1) / (segments ** params.w3)
             else:
-                no_improve_count = 0
+                continue
+                
+            # 计算得分比值
+            score_per_meter = preference_total / dist_real if dist_real > 0 else 0
+            score_per_segment = preference_total / segments if segments > 0 else 0
             
-            if no_improve_count >= max_time:
-                print(f'连续{max_time}次迭代未改进最优值，提前终止迭代！')
-                early_stop_flag = True
-                break
+            metrics.append({
+                'node_id': node_id,
+                'preference_total': preference_total,  # UPDATE: 添加偏好总分
+                'total_std': total_std,
+                'dist_std': dist_std,
+                'segments': segments,
+                'dist_real': dist_real,
+                'score': score,
+                'ratio': ratio,
+                'score_per_meter': score_per_meter,
+                'score_per_segment': score_per_segment
+            })
+        
+        return metrics
     
-    # 绘制结果
-    fig, ax = plt.subplots(figsize=(12, 10))
-    
-    # 绘制路网
-    for i in range(num_nodes):
-        for j in range(i+1, num_nodes):
-            if adj_mat[i, j] > 0:
-                ax.plot([unique_nodes[i, 0], unique_nodes[j, 0]], 
-                        [unique_nodes[i, 1], unique_nodes[j, 1]], 'k-', alpha=0.2)
-    
-    # 绘制最优路径
-    for i in range(len(best_path)-1):
-        from_node = best_path[i]
-        to_node = best_path[i+1]
-        ax.plot([unique_nodes[from_node, 0], unique_nodes[to_node, 0]], 
-                [unique_nodes[from_node, 1], unique_nodes[to_node, 1]], 'r-', linewidth=2)
-    
-    # 标记起点和终点
-    ax.scatter(unique_nodes[start_node, 0], unique_nodes[start_node, 1], color='g', s=100, zorder=5)
-    ax.scatter(unique_nodes[end_node, 0], unique_nodes[end_node, 1], color='r', s=100, zorder=5)
-    
-    # 添加图例
-    start_patch = mpatches.Patch(color='g', label='起点')
-    end_patch = mpatches.Patch(color='r', label='终点')
-    path_patch = mpatches.Patch(color='r', label=f'最优路径 (joggability: {best_score_path_ratio:.4f})')
-    
-    ax.legend(handles=[start_patch, end_patch, path_patch], loc='upper right')
-    
-    # 设置标题和标签
-    ax.set_title(f'蚁群算法优化路径 (总长度: {best_dist_real:.2f}m, 路段数: {best_pathword:.0f})', fontsize=14)
-    ax.set_xlabel('X坐标', fontsize=12)
-    ax.set_ylabel('Y坐标', fontsize=12)
-    ax.set_aspect('equal')
-    
-    # 绘制收敛曲线
-    fig2, ax2 = plt.subplots(figsize=(10, 6))
-    iterations = np.arange(1, iter+2)
-    ax2.plot(iterations, all_best_score_path_ratio[:iter+1], 'b-', linewidth=1.5)
-    ax2.set_title('收敛曲线', fontsize=14)
-    ax2.set_xlabel('迭代次数', fontsize=12)
-    ax2.set_ylabel('joggability', fontsize=12)
-    ax2.grid(True)
-    
-    # 返回结果
-    result = {
-        'best_path': best_path,
-        'best_score_path_ratio': best_score_path_ratio,
-        'best_dist': best_dist,
-        'best_dist_real': best_dist_real,
-        'best_pathword': best_pathword,
-        'best_total': best_total,
-        'node_coords': unique_nodes,
-        'convergence': all_best_score_path_ratio[:iter+1].tolist(),
-        'figures': [fig, fig2],
-        'adj_mat': adj_mat
-    }
-    
-    return result
+    def get_optimal_path(self, start_node: int, end_node: Optional[int], best_metric: Dict) -> Tuple[List[int], List[Tuple[float, float]], List[Dict]]:
+        """
+        获取最优路径的节点序列、坐标和路段详细信息
+        """
+        if best_metric['node_id'] == -1:  # 直接路径
+            sql = """
+            SELECT node, edge 
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                %s, %s, directed := false
+            ) ORDER BY seq;
+            """
+            self.cursor.execute(sql, (start_node, end_node))
+            path_result = self.cursor.fetchall()
+        elif end_node is not None:
+            # 通过中间节点的路径
+            mid_node = best_metric['node_id']
+            
+            # 起点到中间节点
+            sql1 = """
+            SELECT node, edge 
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                %s, %s, directed := false
+            ) ORDER BY seq;
+            """
+            self.cursor.execute(sql1, (start_node, mid_node))
+            path1 = self.cursor.fetchall()
+            
+            # 中间节点到终点
+            sql2 = """
+            SELECT node, edge 
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                %s, %s, directed := false
+            ) ORDER BY seq;
+            """
+            self.cursor.execute(sql2, (mid_node, end_node))
+            path2 = self.cursor.fetchall()
+            
+            # 合并路径（去除重复的中间节点）
+            path_result = path1 + path2[1:]
+        else:
+            # 无终点模式：起点到最优节点
+            sql = """
+            SELECT node, edge 
+            FROM pgr_dijkstra(
+                'SELECT id, source, target, dis_ori as cost, dis_ori as reverse_cost FROM edgesmodified',
+                %s, %s, directed := false
+            ) ORDER BY seq;
+            """
+            self.cursor.execute(sql, (start_node, best_metric['node_id']))
+            path_result = self.cursor.fetchall()
+        
+        # 提取节点和边
+        path_nodes = [row[0] for row in path_result]
+        path_edges = [row[1] for row in path_result if row[1] is not None]  # 去除None值（终点没有outgoing edge）
+        
+        # 获取路径坐标
+        nodes_str = ','.join(map(str, path_nodes))
+        sql = """
+        SELECT x, y 
+        FROM nodesmodified 
+        WHERE id IN ({})
+        ORDER BY array_position(ARRAY[{}], id);
+        """.format(nodes_str, nodes_str)
 
-# 自定义JSON编码器处理NumPy类型
-class NumpyEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return super(NumpyEncoder, self).default(obj)
+        self.cursor.execute(sql)
+        coordinates = [(row[0], row[1]) for row in self.cursor.fetchall()]  # (lon, lat)
+        
+        # 获取路段详细信息
+        edge_details = []
+        if path_edges:
+            edges_str = ','.join(map(str, path_edges))
+            sql = """
+            SELECT id, fid, water, bh, shape_leng, frequency, slope, buildng, ndvi, winding,
+                   sport, life, education, finance, traffic, public, scenery, food, poi, svi, gvi,
+                   vw, vei, light, poiden, origlen, score, startx, starty, endx, endy, total,
+                   dij_w1, distance, score_ori, dis_ori, toatl_ori1, toatl_ori2,
+                   ST_AsGeoJSON(geom) as geometry
+            FROM edgesmodified 
+            WHERE id IN ({})
+            ORDER BY array_position(ARRAY[{}], id);
+            """.format(edges_str, edges_str)
+            
+            self.cursor.execute(sql)
+            edge_results = self.cursor.fetchall()
+            
+            for edge in edge_results:
+                edge_info = {
+                    'edge_id': edge[0],
+                    'fid': edge[1],
+                    'water': edge[2],
+                    'bh': edge[3],
+                    'shape_leng': edge[4],
+                    'frequency': edge[5],
+                    'slope': edge[6],
+                    'buildng': edge[7],
+                    'ndvi': edge[8],
+                    'winding': edge[9],
+                    'sport': edge[10],
+                    'life': edge[11],
+                    'education': edge[12],
+                    'finance': edge[13],
+                    'traffic': edge[14],
+                    'public': edge[15],
+                    'scenery': edge[16],
+                    'food': edge[17],
+                    'poi': edge[18],
+                    'svi': edge[19],
+                    'gvi': edge[20],
+                    'vw': edge[21],
+                    'vei': edge[22],
+                    'light': edge[23],
+                    'poiden': edge[24],
+                    'origlen': edge[25],
+                    'score': edge[26],
+                    'startx': edge[27],
+                    'starty': edge[28],
+                    'endx': edge[29],
+                    'endy': edge[30],
+                    'total': edge[31],
+                    'dij_w1': edge[32],
+                    'distance': edge[33],
+                    'score_ori': edge[34],
+                    'dis_ori': edge[35],
+                    'toatl_ori1': edge[36],
+                    'toatl_ori2': edge[37],
+                    'geometry': json.loads(edge[38]) if edge[38] else None
+                }
+                edge_details.append(edge_info)
 
-@routeplanning_bp.route('/plan_route', methods=['POST'])
-def plan_route():
-    """API接口：规划路线"""
+        return path_nodes, coordinates, edge_details
+    
+    def create_geojson(self, coordinates: List[Tuple[float, float]], properties: Dict, edge_details: List[Dict] = None) -> Dict:
+        """创建GeoJSON格式的路径，包含边的详细信息"""
+        geojson = {
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": coordinates
+            },
+            "properties": properties
+        }
+        
+        # 添加边的详细信息
+        if edge_details:
+            geojson["properties"]["edge_details"] = edge_details
+            
+            # 添加统计信息
+            total_score = sum(edge.get('score', 0) or 0 for edge in edge_details)
+            total_distance = sum(edge.get('dis_ori', 0) or 0 for edge in edge_details)
+            avg_score = total_score / len(edge_details) if edge_details else 0
+            avg_distance = total_distance / len(edge_details) if edge_details else 0
+            
+            geojson["properties"]["edge_statistics"] = {
+                "total_edges": len(edge_details),
+                "total_score": total_score,
+                "total_distance": total_distance,
+                "avg_score_per_edge": avg_score,
+                "avg_distance_per_edge": avg_distance
+            }
+        
+        return geojson
+    
+    def plan_route(self, params: RouteParams) -> RouteResult:
+        """
+        主要路径规划方法 - UPDATE: 支持6种约束模式和7种偏好模式（来自modified-3.m）
+        
+        Args:
+            params: 路径规划参数
+            
+        Returns:
+            路径规划结果
+        """
+        logger.info(f"开始路径规划，约束模式: {params.constraint_mode.name}，偏好模式: {params.preference_mode.name}")
+        
+        # 验证参数
+        self.validate_params(params)
+        
+        # 查找起终点最近的路网节点，并输出吸附信息
+        start_node, start_node_lat, start_node_lon = self.find_nearest_node(params.start_lat, params.start_lon)
+        end_node = None
+        end_node_lat = end_node_lon = None
+        
+        # UPDATE: 根据约束模式决定是否需要终点
+        if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.SEGMENTS_WITH_END, 
+                                    ConstraintMode.SHORTEST_PATH, ConstraintMode.MIN_SEGMENTS_PATH]:
+            if params.end_lat is not None and params.end_lon is not None:
+                end_node, end_node_lat, end_node_lon = self.find_nearest_node(params.end_lat, params.end_lon)
+                logger.info(f"终点吸附到节点: {end_node} (lat={end_node_lat}, lon={end_node_lon})")
+        
+        logger.info(f"起点吸附到节点: {start_node} (lat={start_node_lat}, lon={start_node_lon})")
+        
+        # UPDATE: 处理最短路径模式（5和6）
+        if params.constraint_mode in [ConstraintMode.SHORTEST_PATH, ConstraintMode.MIN_SEGMENTS_PATH]:
+            if end_node is None:
+                raise ValueError("模式5和6需要提供终点坐标")
+            
+            # 直接计算最短路径
+            best_metric = self.calculate_shortest_path(start_node, end_node, params.constraint_mode, params)
+            logger.info(f"最短路径计算完成，距离: {best_metric['dist_real']:.2f}米，路段数: {best_metric['segments']}")
+            
+            # 获取路径坐标
+            path_nodes, coordinates, edge_details = self.get_optimal_path(start_node, end_node, best_metric)
+            
+        else:
+            # UPDATE: 传统约束模式（1-4）- 支持动态约束计算
+            # 首先计算动态约束范围
+            try:
+                constraint_info = self.calculate_dynamic_constraints(start_node, end_node, params.constraint_mode)
+                logger.info(f"动态约束范围: {constraint_info['min_value']:.0f} - {constraint_info['max_value']:.0f} {constraint_info['unit']}")
+                logger.info(f"推荐值: {constraint_info['recommended_values']}")
+            except Exception as e:
+                logger.warning(f"动态约束计算失败，使用固定约束: {e}")
+                constraint_info = None
+            
+            # 获取约束范围
+            min_constraint, max_constraint = self.get_constraint_bounds(params)
+            logger.info(f"使用约束范围: {min_constraint} - {max_constraint}")
+            
+            # 筛选有效节点
+            if params.constraint_mode in [ConstraintMode.DISTANCE_WITH_END, ConstraintMode.DISTANCE_NO_END]:
+                valid_nodes = self.filter_valid_nodes_by_distance(start_node, end_node, min_constraint, max_constraint)
+            else:
+                valid_nodes = self.filter_valid_nodes_by_segments(start_node, end_node, min_constraint, max_constraint)
+            
+            if not valid_nodes:
+                print("valid_nodes:", len(valid_nodes))
+                raise ValueError("没有满足约束条件的节点，请调整约束范围")
+            
+            logger.info(f"有效节点数: {len(valid_nodes)}")
+            
+            # 计算路径指标
+            metrics = self.calculate_path_metrics(start_node, end_node, valid_nodes, params)
+            
+            if not metrics:
+                raise ValueError("没有找到有效路径，请调整约束参数")
+            
+            # 选择最优路径
+            best_metric = max(metrics, key=lambda x: x['ratio'])
+            logger.info(f"最优比值: {best_metric['ratio']:.4f}")
+            
+            # 获取最优路径
+            path_nodes, coordinates, edge_details = self.get_optimal_path(start_node, end_node, best_metric)
+
+        # UPDATE: 确保使用正确的偏好评分值
+        preference_score = best_metric.get('preference_total', best_metric.get('score', 0))
+        logger.info(f"偏好模式 {params.preference_mode.name} 总评分: {preference_score:.2f}")
+
+        # 创建GeoJSON - UPDATE: 添加偏好模式信息和偏好评分
+        geojson = self.create_geojson(coordinates, {
+            'optimization_ratio': best_metric['ratio'],
+            'total_score': best_metric['score'],
+            'preference_score': preference_score,  # UPDATE: 新增偏好评分
+            'total_distance': best_metric['dist_real'],
+            'total_segments': best_metric['segments'],
+            'score_per_meter': best_metric['score_per_meter'],
+            'score_per_segment': best_metric['score_per_segment'],
+            'constraint_mode': params.constraint_mode.name,
+            'preference_mode': params.preference_mode.name  # UPDATE: 新增偏好模式信息
+        }, edge_details)
+
+        # 保存GeoJSON到指定临时目录
+        try:
+            temp_folder = self.get_temp_folder()
+            os.makedirs(temp_folder, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'route_{start_node}_to_{end_node if end_node else "auto"}_{timestamp}.json'
+            geojson_path = os.path.join(temp_folder, filename)
+            with open(geojson_path, 'w', encoding='utf-8') as f:
+                json.dump(geojson, f, ensure_ascii=False, indent=2)
+            logger.info(f"GeoJSON 路径已保存到: {geojson_path}")
+        except Exception as e:
+            logger.error(f"保存GeoJSON失败: {e}")
+
+        # UPDATE: 返回结果包含动态约束信息
+        result = RouteResult(
+            path_nodes=path_nodes,
+            path_coordinates=coordinates,
+            total_distance=best_metric['dist_real'],
+            total_segments=best_metric['segments'],
+            total_score=best_metric['score'],
+            optimization_ratio=best_metric['ratio'],
+            score_per_meter=best_metric['score_per_meter'],
+            score_per_segment=best_metric['score_per_segment'],
+            geojson=geojson
+        )
+        
+        # UPDATE: 添加动态约束推荐信息（如果计算成功）
+        if 'constraint_info' in locals() and constraint_info:
+            if constraint_info['type'] == 'distance':
+                result.recommended_distances = constraint_info['recommended_values']
+                result.distance_range = (constraint_info['min_value'], constraint_info['max_value'])
+            else:
+                result.recommended_segments = constraint_info['recommended_values']
+                result.segments_range = (constraint_info['min_value'], constraint_info['max_value'])
+        
+        return result
+
+def plan_jogging_route(start_lat: float, start_lon: float, 
+                      end_lat: Optional[float] = None, end_lon: Optional[float] = None,
+                      constraint_mode: int = 1, preference_mode: int = 1,  # UPDATE: 新增偏好模式参数
+                      target_distance: float = 5000, distance_tolerance: float = 400, 
+                      target_segments: int = 40, segments_tolerance: int = 5, 
+                      w1: float = 1.0, w2: float = 0.0, w3: float = 1.0) -> Dict:
+    """
+    便捷的路径规划函数 - UPDATE: 支持6种约束模式和7种偏好模式（来自modified-3.m）
+    
+    Args:
+        start_lat: 起点纬度
+        start_lon: 起点经度
+        end_lat: 终点纬度（可选）
+        end_lon: 终点经度（可选）
+        constraint_mode: 约束模式 (1-6)，模式1：有终点，距离约束；模式2：有终点，路段数约束；模式3：无终点，距离约束；模式4：无终点，路段数约束；模式5：有终点，最短距离；模式6：有终点，最少路段数
+        preference_mode: 偏好模式 (1-7)，模式1：综合得分；模式2：滨水路线；模式3：绿化路线；模式4：视野开阔路线；模式5：夜间灯光充足路线；模式6：设施便利路线；模式7：坡度平缓路线
+        target_distance: 目标距离(米)
+        distance_tolerance: 距离容差
+        target_segments: 目标路段数
+        segments_tolerance: 路段数容差
+        w1: Total权重
+        w2: 长度权重
+        w3: 路段数权重
+        
+    Returns:
+        包含路径信息的字典
+    """
+    # 参数设置 - UPDATE: 添加偏好模式
+    params = RouteParams(
+        start_lat=start_lat,
+        start_lon=start_lon,
+        end_lat=end_lat,
+        end_lon=end_lon,
+        constraint_mode=ConstraintMode(constraint_mode),
+        preference_mode=PreferenceMode(preference_mode),  # UPDATE: 新增偏好模式
+        target_distance=target_distance,
+        distance_tolerance=distance_tolerance,
+        target_segments=target_segments,
+        segments_tolerance=segments_tolerance,
+        w1=w1,
+        w2=w2,
+        w3=w3
+    )
+    
+    # 执行路径规划
+    planner = JoggingPathPlanner()
     try:
-        data = request.get_json()
-        start_node = data.get('start_node', 2903)
-        end_node = data.get('end_node', 1104)
+        planner.connect()
+        result = planner.plan_route(params)
         
-        # 可选参数
-        params = {
-            'num_ants': data.get('num_ants', 20),
-            'max_iter': data.get('max_iter', 80),
-            'min_path_length': data.get('min_path_length', 10000),
-            'max_path_length': data.get('max_path_length', 11000),
-            'min_path_word': data.get('min_path_word', 50),
-            'max_path_word': data.get('max_path_word', 60),
-            'w0': data.get('w0', 0),
-            'w1': data.get('w1', 1),
-            'w2': data.get('w2', 0),
-            'w3': data.get('w3', 1),
-            'dij': data.get('dij', 0),
-            'bfs': data.get('bfs', 0),
+        return {
+            'success': True,
+            'path_nodes': result.path_nodes,
+            'path_coordinates': result.path_coordinates,
+            'total_distance': result.total_distance,
+            'total_segments': result.total_segments,
+            'total_score': result.total_score,
+            'optimization_ratio': result.optimization_ratio,
+            'score_per_meter': result.score_per_meter,
+            'score_per_segment': result.score_per_segment,
+            'geojson': result.geojson,
+            # UPDATE: 新增动态约束推荐信息
+            'recommended_distances': result.recommended_distances,
+            'recommended_segments': result.recommended_segments,
+            'distance_range': result.distance_range,
+            'segments_range': result.segments_range
         }
-        
-        result = ant_colony_optimization(start_node, end_node, **params)
-        
-        # 加载配置获取临时文件夹路径
-        config = load_config()
-        temp_folder = config.get('route_planning_temp_folder', './temp')
-        temp_folder = ensure_temp_folder(temp_folder)
+    except Exception as e:
+        logger.error(f"路径规划失败: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+    finally:
+        planner.disconnect()
 
-        # 生成时间戳作为文件名的一部分
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+def test(test_mode: int = 1):
+    """
+    路径规划测试
+    有3个modes，分别是：
+    测试1：滨水路线偏好（偏好模式2）。
+    测试2：最短路径模式（约束模式5）。
+    测试3：绿化路线偏好，无终点模式（约束模式3，偏好模式3）
+    """
+    # UPDATE: 示例测试支持新的偏好模式（来自modified-3.m）
+    if test_mode == 1:
+        print("=== 测试1：路线偏好===")
+        result1 = plan_jogging_route(
+            start_lat=30.263982,  # 起点纬度
+            start_lon=120.1588077, # 起点经度
+            end_lat=30.341572,    # 终点纬度（可选）
+            end_lon=120.1876803,   # 终点经度（可选）
+            constraint_mode=1,    # 模式1：有终点，距离约束
+            preference_mode=7,    # UPDATE: 偏好模式7：坡度平缓路线
+            target_distance=10000,  # 目标距离10公里
+            distance_tolerance=5000,  # 容差5000米
+            w1=1.0,             # Total权重
+            w2=0.0,             # 长度权重
+            w3=1.0              # 路段数权重
+        )
         
-        # 保存结果为JSON文件
-        result_data = {
-            'start_node': start_node,
-            'end_node': end_node,
-            'best_path': result['best_path'],
-            'best_score': float(result['best_score_path_ratio']),
-            'path_length': float(result['best_dist_real']),
-            'path_segments': int(result['best_pathword']),
-            'parameters': params
-        }
+        if result1['success']:
+            print("滨水路线规划成功！")
+            print(f"总距离: {result1['total_distance']:.2f}米")
+            print(f"总路段数: {result1['total_segments']}")
+            print(f"优化比值: {result1['optimization_ratio']:.4f}")
+            print(f"每米可慢跑性: {result1['score_per_meter']:.4f}")
+            print(f"每段可慢跑性: {result1['score_per_segment']:.4f}")
+            # UPDATE: 显示动态约束推荐信息
+            if result1['recommended_distances']:
+                print(f"推荐距离: {result1['recommended_distances']}")
+            if result1['distance_range']:
+                print(f"有效距离范围: {result1['distance_range'][0]:.0f} - {result1['distance_range'][1]:.0f}米")
+        else:
+            print(f"滨水路线规划失败: {result1['error']}")
+    if test_mode == 2:
+        print("\n=== 测试2：最短路径模式（约束模式5） ===")
+        result2 = plan_jogging_route(
+            start_lat=30.263982,
+            start_lon=120.1588077,
+            end_lat=30.341572,
+            end_lon=120.1876803,
+            constraint_mode=5,    # UPDATE: 模式5：最短距离路径
+            preference_mode=3,    # 偏好模式1：综合得分
+            w1=1.0,
+            w2=0.0,
+            w3=1.0
+        )
         
-        json_path = os.path.join(temp_folder, f'route_{start_node}_to_{end_node}_{timestamp}.json')
-        with open(json_path, 'w', encoding='utf-8') as json_file:
-            json.dump(result_data, json_file, ensure_ascii=False, indent=4, cls=NumpyEncoder)
+        if result2['success']:
+            print("最短路径规划成功！")
+            print(f"总距离: {result2['total_distance']:.2f}米")
+            print(f"总路段数: {result2['total_segments']}")
+            print(f"优化比值: {result2['optimization_ratio']:.4f}")
+        else:
+            print(f"最短路径规划失败: {result2['error']}")
+    
+    if test_mode == 3:
+        print("\n=== 测试3：绿化路线偏好，无终点模式（约束模式3，偏好模式3） ===")
+        result3 = plan_jogging_route(
+            start_lat=30.263982,
+            start_lon=120.1588077,
+            constraint_mode=3,    # 模式3：无终点，距离约束
+            preference_mode=6,    # UPDATE: 偏好模式6：设施便利路线
+            target_distance=7000,  # 目标距离8公里
+            distance_tolerance=7000,
+            w1=1.0,
+            w2=0.0,
+            w3=1.0
+        )
         
-        print(f"路径规划结果已保存至: {json_path}")
-        
-        # 绘制路网图并保存
-        fig, ax = plt.subplots(figsize=(12, 10))
-        
-        # 绘制路网
-        for i in range(len(result['node_coords'])):
-            for j in range(i+1, len(result['node_coords'])):
-                if result['adj_mat'][i, j] > 0:  # 使用 result['adj_mat'] 而不是 adj_mat
-                    ax.plot([result['node_coords'][i, 0], result['node_coords'][j, 0]], 
-                            [result['node_coords'][i, 1], result['node_coords'][j, 1]], 'k-', alpha=0.2)
-         # 绘制最优路径
-        for i in range(len(result['best_path'])-1):
-            from_node = result['best_path'][i]
-            to_node = result['best_path'][i+1]
-            ax.plot([result['node_coords'][from_node, 0], result['node_coords'][to_node, 0]], 
-                    [result['node_coords'][from_node, 1], result['node_coords'][to_node, 1]], 'r-', linewidth=2)
-        
-        # 标记起点和终点
-        ax.scatter(result['node_coords'][start_node, 0], result['node_coords'][start_node, 1], 
-                   color='g', s=100, zorder=5)
-        ax.scatter(result['node_coords'][end_node, 0], result['node_coords'][end_node, 1], 
-                   color='r', s=100, zorder=5)
-        
-        # 添加图例（确保中文显示）
-        start_patch = mpatches.Patch(color='g', label='起点')
-        end_patch = mpatches.Patch(color='r', label='终点')
-        path_patch = mpatches.Patch(color='r', label=f'最优路径 (joggability: {result["best_score_path_ratio"]:.4f})')
-        
-        ax.legend(handles=[start_patch, end_patch, path_patch], loc='upper right')
-        
-        # 设置标题和标签（中文）
-        ax.set_title(f'蚁群算法优化路径 (总长度: {result["best_dist_real"]:.2f}m, 路段数: {result["best_pathword"]:.0f})', 
-                    fontsize=14)
-        ax.set_xlabel('X坐标 (经度)', fontsize=12)
-        ax.set_ylabel('Y坐标 (纬度)', fontsize=12)
-        ax.set_aspect('equal')
-        
-        # 保存图像到临时文件夹
-        img_path = os.path.join(temp_folder, f'route_{start_node}_to_{end_node}_{timestamp}.png')
-        plt.savefig(img_path, dpi=300, bbox_inches='tight')
-        print(f"路径规划图像已保存至: {img_path}")
-        
-        # 绘制收敛曲线并保存
-        fig2, ax2 = plt.subplots(figsize=(10, 6))
-        iterations = np.arange(1, len(result['convergence'])+1)
-        ax2.plot(iterations, result['convergence'], 'b-', linewidth=1.5)
-        ax2.set_title('收敛曲线', fontsize=14)
+        if result3['success']:
+            print("绿化路线规划成功！")
+            print(f"总距离: {result3['total_distance']:.2f}米")
+            print(f"总路段数: {result3['total_segments']}")
+            print(f"优化比值: {result3['optimization_ratio']:.4f}")
+            if result3['recommended_distances']:
+                print(f"推荐距离: {result3['recommended_distances']}")
+        else:
+            print(f"绿化路线规划失败: {result3['error']}")
 
-        ax2.set_xlabel('迭代次数', fontsize=12)
-        ax2.set_ylabel('joggability', fontsize=12)
-        ax2.grid(True)
+
+# ================================
+# Flask 蓝图 API 部分
+# ================================
+
+try:
+    from flask import Blueprint, request, jsonify
+    import glob
+    import time
+    
+    # 创建蓝图
+    route_planning_bp = Blueprint('route_planning', __name__)
+    
+    @route_planning_bp.route('/api/get_routes', methods=['POST'])
+    def get_routes():
+        """
+        路径规划API端点 - UPDATE: 支持6种约束模式和7种偏好模式（来自modified-3.m）
+        接受JSON格式的路径规划请求，返回生成的文件名
         
-        convergence_path = os.path.join(temp_folder, f'convergence_{start_node}_to_{end_node}_{timestamp}.png')
-        fig2.savefig(convergence_path, dpi=300, bbox_inches='tight')
-        print(f"收敛曲线图像已保存至: {convergence_path}")
-        
-        # 清理matplotlib资源
-        plt.close(fig)
-        plt.close(fig2)
-        
-        # 提取关键结果数据
-        response_data = {
-            'best_path': [int(node) for node in result['best_path']],  # 转换int64为Python int
-            'best_score': float(result['best_score_path_ratio']),
-            'path_length': float(result['best_dist_real']),
-            'path_segments': int(result['best_pathword']),
-            'node_coordinates': result['node_coords'].tolist(),  # 转换ndarray为list
-            'convergence': result['convergence'],
-            'json_file': json_path,
-            'image_file': img_path,
-            'convergence_file': convergence_path
+        请求格式:
+        {
+            "start_lat": 30.3210982,
+            "start_lon": 120.1788077,
+            "end_lat": 30.313572,          # 可选（模式1,2,5,6需要）
+            "end_lon": 120.1776803,        # 可选（模式1,2,5,6需要）
+            "constraint_mode": 1,          # 1-6, 默认1（UPDATE: 扩展到6个模式）
+            "preference_mode": 1,          # 1-7, 默认1（UPDATE: 新增偏好模式）
+            "target_distance": 6000,       # 目标距离(米), 默认5000
+            "distance_tolerance": 500,     # 距离容差, 默认400
+            "target_segments": 40,         # 目标路段数, 默认40
+            "segments_tolerance": 5,       # 路段数容差, 默认5
+            "w1": 1.0,                    # Total权重, 默认1.0
+            "w2": 0.0,                    # 长度权重, 默认0.0
+            "w3": 1.0                     # 路段数权重, 默认1.0
         }
         
+        约束模式说明:
+        1: 有终点，距离约束
+        2: 有终点，路段数约束
+        3: 无终点，距离约束
+        4: 无终点，路段数约束
+        5: 有终点，最短距离（无约束）
+        6: 有终点，最少路段数（无约束）
+        
+        偏好模式说明:
+        1: 综合得分（原Total）
+        2: 滨水路线
+        3: 绿化路线
+        4: 视野开阔路线
+        5: 夜间灯光充足路线
+        6: 设施便利路线
+        7: 坡度平缓路线
+        
+        响应格式:
+        {
+            "success": true,
+            "filename": "route_2903_to_1104_20250810_152030.json",
+            "filepath": "G:/gh_repo/Joy-Run-Smart-Track/backend/temp/route_2903_to_1104_20250810_152030.json",
+            "route_info": {
+                "total_distance": 6234.56,
+                "total_segments": 42,
+                "optimization_ratio": 1.2345,
+                "score_per_meter": 0.0012,
+                "score_per_segment": 15.67,
+                "recommended_distances": [5000, 5500, 6000],  # UPDATE: 动态推荐值
+                "distance_range": [3200, 8500]                # UPDATE: 有效范围
+            }
+            }
+        }
+        """
+        try:
+            # 获取请求数据
+            data = request.get_json()
+            if not data:
+                return jsonify({
+                    'success': False,
+                    'error': '请求体必须是JSON格式'
+                }), 400
+            
+            # 验证必需参数
+            required_params = ['start_lat', 'start_lon']
+            for param in required_params:
+                if param not in data:
+                    return jsonify({
+                        'success': False,
+                        'error': f'缺少必需参数: {param}'
+                    }), 400
+            
+            # 提取参数，设置默认值 - UPDATE: 添加偏好模式参数
+            start_lat = float(data['start_lat'])
+            start_lon = float(data['start_lon'])
+            end_lat = data.get('end_lat')
+            end_lon = data.get('end_lon')
+            constraint_mode = int(data.get('constraint_mode', 1))
+            preference_mode = int(data.get('preference_mode', 1))  # UPDATE: 新增偏好模式，默认为1
+            target_distance = float(data.get('target_distance', 5000))
+            distance_tolerance = float(data.get('distance_tolerance', 400))
+            target_segments = int(data.get('target_segments', 40))
+            segments_tolerance = int(data.get('segments_tolerance', 5))
+            w1 = float(data.get('w1', 1.0))
+            w2 = float(data.get('w2', 0.0))
+            w3 = float(data.get('w3', 1.0))
+            
+            # 转换 end_lat 和 end_lon 为 float 或 None
+            if end_lat is not None:
+                end_lat = float(end_lat)
+            if end_lon is not None:
+                end_lon = float(end_lon)
+            
+            # UPDATE: 参数验证扩展到6种约束模式和7种偏好模式
+            if constraint_mode not in range(1, 7):
+                return jsonify({
+                    'success': False,
+                    'error': 'constraint_mode必须在1-6之间'
+                }), 400
+                
+            if preference_mode not in range(1, 8):
+                return jsonify({
+                    'success': False,
+                    'error': 'preference_mode必须在1-7之间'
+                }), 400
+            
+            # 执行路径规划
+            logger.info(f"API请求路径规划: start=({start_lat}, {start_lon}), end=({end_lat}, {end_lon}), constraint_mode={constraint_mode}, preference_mode={preference_mode}")
+            
+            result = plan_jogging_route(
+                start_lat=start_lat,
+                start_lon=start_lon,
+                end_lat=end_lat,
+                end_lon=end_lon,
+                constraint_mode=constraint_mode,
+                preference_mode=preference_mode,  # UPDATE: 添加偏好模式参数
+                target_distance=target_distance,
+                distance_tolerance=distance_tolerance,
+                target_segments=target_segments,
+                segments_tolerance=segments_tolerance,
+                w1=w1,
+                w2=w2,
+                w3=w3
+            )
+            
+            if result['success']:
+                # 从temp目录获取最新生成的路径文件
+                config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config.yaml'))
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                temp_folder = config.get('route_planning_temp_folder', 'G:/gh_repo/Joy-Run-Smart-Track/backend/temp')
+                
+                # 获取最近5分钟内生成的路径文件
+                current_time = time.time()
+                pattern = os.path.join(temp_folder, 'route_*.json')
+                recent_files = []
+                
+                for file in glob.glob(pattern):
+                    if os.path.getctime(file) > current_time - 300:  # 5分钟内
+                        recent_files.append(file)
+                
+                if recent_files:
+                    # 获取最新的文件
+                    latest_file = max(recent_files, key=os.path.getctime)
+                    filename = os.path.basename(latest_file)
+                    filepath = latest_file
+                else:
+                    # 如果没有找到最新文件，使用默认命名
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f'route_generated_{timestamp}.json'
+                    filepath = os.path.join(temp_folder, filename)
+                
+                return jsonify({
+                    'success': True,
+                    'filename': filename,
+                    'filepath': filepath,
+                    'route_info': {
+                        'total_distance': result['total_distance'],
+                        'total_segments': result['total_segments'],
+                        'optimization_ratio': result['optimization_ratio'],
+                        'score_per_meter': result['score_per_meter'],
+                        'score_per_segment': result['score_per_segment']
+                    }
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': result['error']
+                }), 500
+                
+        except ValueError as e:
+            return jsonify({
+                'success': False,
+                'error': f'参数格式错误: {str(e)}'
+            }), 400
+        except Exception as e:
+            logger.error(f"API路径规划失败: {e}")
+            return jsonify({
+                'success': False,
+                'error': f'服务器内部错误: {str(e)}'
+            }), 500
+    
+    @route_planning_bp.route('/api/get_routes/health', methods=['GET'])
+    def health_check():
+        """健康检查端点"""
         return jsonify({
-            'status': 'success',
-            'data': response_data
+            'status': 'healthy',
+            'service': 'route_planning',
+            'timestamp': datetime.now().isoformat()
         })
-    except Exception as e:
-        print(f"路径规划错误: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
-
-
-
-@routeplanning_bp.route('/get_route_image/<int:start_node>/<int:end_node>', methods=['GET'])
-def get_route_image(start_node, end_node):
-    """返回路径规划图像"""
-    try:
-        # 执行路径规划
-        params = {
-            'num_ants': int(request.args.get('num_ants', 20)),
-            'max_iter': int(request.args.get('max_iter', 30)),  # 减少迭代次数以加快响应
-            'w1': int(request.args.get('w1', 1)),
-            'w2': int(request.args.get('w2', 0)),
-            'w3': int(request.args.get('w3', 1)),
-        }
-        
-        result = ant_colony_optimization(start_node, end_node, **params)
-        
-        # 保存图像到内存
-        img_buffer = io.BytesIO()
-        result['figures'][0].savefig(img_buffer, format='png', dpi=300)
-        img_buffer.seek(0)
-        
-        # 清理matplotlib资源
-        for fig in result['figures']:
-            plt.close(fig)
-        
-        return send_file(img_buffer, mimetype='image/png')
     
-    except Exception as e:
+    @route_planning_bp.route('/api/get_routes/help', methods=['GET'])
+    def api_help():
+        """API帮助文档"""
         return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
+            'endpoint': '/api/get_routes',
+            'method': 'POST',
+            'description': '智能慢跑路径规划API',
+            'required_parameters': {
+                'start_lat': 'float - 起点纬度',
+                'start_lon': 'float - 起点经度'
+            },
+            'optional_parameters': {
+                'end_lat': 'float - 终点纬度（可选）',
+                'end_lon': 'float - 终点经度（可选）',
+                'constraint_mode': 'int - 约束模式 (1-4)，默认1',
+                'target_distance': 'float - 目标距离(米)，默认5000',
+                'distance_tolerance': 'float - 距离容差，默认400',
+                'target_segments': 'int - 目标路段数，默认40',
+                'segments_tolerance': 'int - 路段数容差，默认5',
+                'w1': 'float - Total权重，默认1.0',
+                'w2': 'float - 长度权重，默认0.0',
+                'w3': 'float - 路段数权重，默认1.0'
+            },
+            'constraint_modes': {
+                '1': '有终点，距离约束',
+                '2': '有终点，路段数约束',
+                '3': '无终点，距离约束',
+                '4': '无终点，路段数约束'
+            }
+        })
+
+except ImportError:
+    # 如果没有安装Flask，定义一个虚拟的蓝图对象
+    logger.info("Flask未安装，跳过API功能")
+    route_planning_bp = None
+
+
+# 使用示例
+if __name__ == "__main__":
+   test(3)

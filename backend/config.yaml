@@ -1,1 +1,5 @@
-route_planning_temp_folder: G:\gh_repo\Joy-Run-Smart-Track\backend\temp
+# route_planning_temp_folder: G:\gh_repo\Joy-Run-Smart-Track\backend\temp
+# last_spider_time_stamp_file: G:\gh_repo\Joy-Run-Smart-Track\backend\temp\last_spider_time_stamp.txt
+
+route_planning_temp_folder: D:\中地校企联合实训\Yuepaozhihui\JoyRun_SmartTrack\backend\temp
+last_spider_time_stamp_file: D:\中地校企联合实训\Yuepaozhihui\JoyRun_SmartTrack\backend\temp\last_spider_time_stamp.txt

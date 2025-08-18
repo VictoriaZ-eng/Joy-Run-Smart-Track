@@ -65,6 +65,10 @@
         </el-col>
       </el-row>
     </el-main>
+      <!-- RoadFilter 筛选框 -->
+      <div class="road-filter-box">
+    <RoadFilter @filter-change="handleFilterChange" />
+  </div>
   </div>
 </template>
 
@@ -72,7 +76,7 @@
 import "@/assets/iconfont/iconfont.css";
 import { ref } from "vue";
 import WeatherView from '@/components/WeatherView.vue';
-import LocationSearch from '@/components/LocationSearch.vue';
+// import LocationSearch from '@/components/LocationSearch.vue';
 import { useRouter } from 'vue-router';
 
 const router = useRouter(); // 获取路由实例
@@ -375,5 +379,10 @@ function format(t) {
   padding-left: 0 !important;
   padding-right: 0 !important;
 }
-
+.road-filter-box {
+  position: absolute;
+  top: 3cm;
+  right: 20px;
+  z-index: 10; /* 确保它盖在地图上 */
+}
 </style>

@@ -10,5 +10,5 @@
 /* src/assets/styles/global.css */
 .mapboxgl-ctrl,
 .l7-control {
-  z-index: 1000 !important;
+  z-index: 800 !important;
 }
