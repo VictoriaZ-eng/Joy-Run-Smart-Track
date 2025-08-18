@@ -1,3 +1,4 @@
+
 CREATE TABLE weather (
     id SERIAL PRIMARY KEY,
     city VARCHAR(50),

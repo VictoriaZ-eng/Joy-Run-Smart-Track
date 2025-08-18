@@ -9,9 +9,12 @@ weather_bp = Blueprint('weather', __name__)
 DB_CONFIG = {
     'host': 'localhost',
     'port': 5432,
-    'database': 'joy_run_db',
+    # 'database': 'joy_run_db',
+    'database': 'postgres',
     'user': 'postgres',
-    'password': 'postgres1'
+    # 'password': 'postgres1'
+    'password': 'zzq12'
+
 }
 
 def get_db_connection():
