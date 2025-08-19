@@ -101,7 +101,7 @@
           shadowBlur: 2,
           shadowColor: 'rgba(0,0,0,0.3)'
         },
-        formatter: (item) => `${(item.value * 100).toFixed(0)}%`
+        formatter: (item) => `${(item.value)}`
       }
     });
   

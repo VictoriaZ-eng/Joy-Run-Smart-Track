@@ -1,18 +1,20 @@
 <template>
   <div class="sidebar" :class="{ collapsed }">
     <button class="toggle" @click="collapsed = !collapsed">
-      {{ collapsed ? '▶' : '◀' }}
+      <span class="toggle-flag" v-if="collapsed">
+        <span class="toggle-text">展开推荐路线</span>
+      </span>
+      <span v-else>◀</span>
     </button>
     <div v-if="!collapsed" class="content">
       <div
         v-for="route in routes"
         :key="route.id"
         class="route-block"
-        @click="selectRoute(route.id)"
-        @dblclick="emit('show-detail', route.id)" 
+        @click="handleRouteClick(route.id)"
       >
- <!-- 左侧文本区 -->
- <div class="text-content">
+        <!-- 左侧文本区 -->
+        <div class="text-content">
           <div class="type-tag" :style="getTagStyle(route.type)">
             {{ route.type }}
           </div>
@@ -20,8 +22,8 @@
           <p class="route-description">{{ route.description }}</p>
           <p class="route-length">{{ route.length }}</p>
         </div>
-<!-- 右侧图片区 -->
-<div class="image-content">
+        <!-- 右侧图片区 -->
+        <div class="image-content">
           <img 
             v-if="route.image" 
             :src="route.image" 
@@ -35,38 +37,39 @@
         </div>
       </div>
     </div>
-  
   </div>
 </template>
-  
-  <script setup>
-  import { ref } from 'vue';
-  const getTagStyle = (type) => {
+
+<script setup>
+import { ref } from 'vue';
+
+const getTagStyle = (type) => {
   const colorMap = {
     '3km短途进阶中距离': '#e0c060', 
-    '2.5km标准短途': '#b87078' ,     
+    '2.5km标准短途': '#b87078',     
     '2.5km环形': '#6090b0',
   };
   return {
     backgroundColor: colorMap[type]
   };
 };
-  defineProps({
-    routes: Array
-  });
-  const emit = defineEmits(['select']);
-  
-  const collapsed = ref(false);
-  const selectRoute = (id) => {
-    emit('select', id);
-  };
 
+defineProps({
+  routes: Array
+});
 
+const emit = defineEmits(['select', 'show-detail']);
 
-  </script>
-  
-  <style scoped>
-  .sidebar {
+const collapsed = ref(true);
+
+const handleRouteClick = (id) => {
+  emit('select', id);  // 原来的单击事件逻辑
+  emit('show-detail', id);  // 原来的双击事件逻辑
+};
+</script>
+
+<style scoped>
+.sidebar {
   width: 400px;
   background-color: white;
   border-right: 1px solid #ccc;
@@ -83,21 +86,77 @@
 
 .toggle {
   position: absolute;
-  right: -15px; /* 向右移动一半到侧边栏外 */
-  top: 40%; /* 距离顶部距离 */
+  right: -15px;
+  top: 40%;
   width: 30px;
-  height: 30px;
+  height: 120px;
   background: white;
   border: 1px solid #ccc;
-  border-radius: 50%;
+  border-radius: 0 15px 15px 0; /* 右侧圆角 */
   cursor: pointer;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   z-index: 10;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
 }
 
+.toggle-flag {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.toggle-text {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: 2px;
+  line-height: 1.5;
+  font-size: 14px;
+  padding: 10px 0;
+  transform: translateX(-3px); /* 微调文字位置 */
+}
+
+/* 展开状态样式 */
+.toggle > span:not(.toggle-flag) {
+  padding: 0 5px;
+  font-size: 16px;
+}
+
+/* 旗帜形状的三角缺口 */
+.toggle::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-top: 60px solid transparent;
+  border-right: 10px solid white;
+  border-bottom: 60px solid transparent;
+  z-index: -1;
+}
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  left: -11px;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-top: 60px solid transparent;
+  border-right: 11px solid #ccc;
+  border-bottom: 60px solid transparent;
+  z-index: -2;
+}
 .toggle:hover {
   background: #f0f0f0;
 }
@@ -181,6 +240,4 @@
   color: #999;
   font-size: 12px;
 }
-
-  </style>
-  
+</style>

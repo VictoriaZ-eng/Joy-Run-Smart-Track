@@ -1,6 +1,14 @@
 <template>
-  <top @filter-change="applyRoadFilter"/>
+  <top/>
   <div class="app-container">
+    <div class="weather-container">
+      <AQICard
+        location-id="101010100"  
+        location-name="北京"/>
+    </div>
+
+      <DataCards />
+
     <Sidebar :routes="routes" @select="onRouteSelect" @show-detail="showDetailCard"/>
     <div id="map" class="map-container"></div>
     <router-view />
@@ -27,6 +35,8 @@
 import { ref, onMounted } from 'vue';
 import top from '@/components/Top.vue';
 import Sidebar from '@/components/Sidebar.vue';
+import AQICard from '@/components/AQICard.vue';
+import DataCards from '@/components/DataVisible.vue'
 import route1Image from '@/assets/images/r1老德胜桥.png'
 import route2Image from '@/assets/images/r2时光公园.png'
 import route3Image from '@/assets/images/r3城北体育公园.png'
@@ -39,14 +49,10 @@ import Polyline from '@geoscene/core/geometry/Polyline.js';
 import Point from '@geoscene/core/geometry/Point.js';
 import FeatureLayer from '@geoscene/core/layers/FeatureLayer.js';
 
-// ------------------
 // 全局变量，保存 MapView 实例
-// ------------------
 let sceneView = null;
 
-// ------------------
 // 初始化地图
-// ------------------
 onMounted(() => initMap());
 
 function initMap() {
@@ -83,15 +89,48 @@ function initMap() {
         ]
       },
     });
+    const pointLayer = new FeatureLayer({
+  url: "https://www.geosceneonline.cn/server/rest/services/Hosted/地标街景/FeatureServer",
+  title: "地标图层",
+  renderer: {
+    type: "simple",  // 使用单一符号渲染
+    symbol: {
+      type: "simple-marker",  // 点符号
+      color: "#FFFF00",     // 红色
+      size: "8px",            // 大小
+      outline: {             // 边框
+        color: "grey",
+        width: 1
+      }
+    }
+  },
+  popupTemplate: {
+      title: "地标信息",
+      content: `
+        <div class="popup-content">
+          <p>名称：{地标名}</p>
+          <div id="streetViewContainer" style="width:300px;height:200px">
+            <img id="streetViewImg" style="width:100%;display:none">
+            <p class="loading">正在加载街景...</p>
+          </div>
+        </div>
+      `,
+      actions: [{
+        title: "刷新街景",
+        id: "refresh",
+        className: "esri-icon-refresh"
+      }]
+    }
+});
     map.add(roadLayer);
+    map.add(pointLayer);
   } catch (error) {
     console.error('地图初始化失败:', error);
   }
 }
 
-// ------------------
+
 // 路线/地标数据
-// ------------------
 const routeFiles = [
   '/src/GIS-data/推荐路线2/01.json',
   '/src/GIS-data/推荐路线2/02.json',
@@ -103,23 +142,20 @@ const dibiaoFiles = [
   '/src/GIS-data/推荐路线2/03地标1.json',
 ];
 
-// ------------------
+
 // 图层存储
-// ------------------
 const routeLayers = [null, null, null];
 const dibiaoLayers = [null, null, null];
 
-// ------------------
+
 // 获取 JSON 数据
-// ------------------
 async function fetchJson(url) {
   const res = await fetch(url);
   return await res.json();
 }
 
-// ------------------
+
 // 初始化图层
-// ------------------
 async function initLayers(view) {
   for (let i = 0; i < 3; i++) {
     const rLayer = await createRouteLayer(i);
@@ -169,25 +205,22 @@ async function createDibiaoLayer(idx) {
   return layer;
 }
 
-// ------------------
+
 // 路线元数据
-// ------------------
 const routes = ref([
   { id: 'route1', type:'3km短途进阶中距离', name: '运河文脉漫行线', description: '老德胜桥 → 潮王桥 → 京杭运河 → 朝晖桥 → 西湖文化广场 → 创意图书馆', length:'总长度：2997.5m', image: route1Image, point:127.4, center: [120.15, 30.28] },
   { id: 'route2', type:'2.5km环形', name: '石桥时光闭环跑道', description: '华盛达中心 → 时光公园 → 石桥河 → 石桥河绿道 ', length:'总长度：2578.5m', image:route2Image, point:109.2, center: [120.17, 30.33] },
   { id: 'route3', type:'2.5km标准短途', name: '阅跑城北公园绿道', description: '杭州图书馆 → 体育公园绿道 → 城北体育公园', length:'总长度：2484.84m', image: route3Image, point:145.0, center: [120.15, 30.31] }
 ]);
 
-// ------------------
+
 // 悬浮卡片
-// ------------------
 const activeDetailCard = ref(null);
 const showDetailCard = (routeId) => activeDetailCard.value = routes.value.find(r => r.id === routeId);
 const closeDetailCard = () => activeDetailCard.value = null;
 
-// ------------------
+
 // 点击聚焦地图并显示路线
-// ------------------
 const onRouteSelect = async (routeId) => {
   const idx = routes.value.findIndex(r => r.id === routeId);
   if (idx === -1 || !sceneView) return;
@@ -212,4 +245,6 @@ const onRouteSelect = async (routeId) => {
 .close-btn { position: absolute; top: 8px; right: 8px; background: none; border: none; font-size: 20px; cursor: pointer; color: #999; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; }
 .close-btn:hover { color: #333; height: 100%; min-height: 0; overflow: hidden; }
 .map { flex: 1; height: 100%; min-height: 0; overflow: hidden; }
+.weather-container {position: absolute;top: 110px; right: 5px;z-index: 1000; /* 确保在地图上方 */}
+
 </style>
