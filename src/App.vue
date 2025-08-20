@@ -1,14 +1,29 @@
 <template>
   <top/>
   <div class="app-container">
-    <div class="weather-container">
-      <AQICard
-        location-id="101010100"  
-        location-name="北京"/>
+    <div class="weather-container" v-if="showAQICard">
+      <AQICard/>
     </div>
-
+    <div v-if="showDataCards">
       <DataCards />
-
+    </div>
+      <!-- 地标浮动弹窗 -->
+      <div 
+      v-if="activeLandmark" 
+      class="landmark-popup"
+      :style="{ top: popupPosition.y + 'px', left: popupPosition.x + 'px' }"
+    >
+      <button class="close-btn" @click="activeLandmark = null">×</button>
+      <p>{{ activeLandmark.name }}</p>
+      <img 
+        :src="activeLandmark.img" 
+        alt="街景" 
+        style="width:100%; max-height:200px;"
+        @error="handleImageError"
+      >
+      <p v-if="imgError" style="color:red">图片加载失败</p>
+    </div>
+    
     <Sidebar :routes="routes" @select="onRouteSelect" @show-detail="showDetailCard"/>
     <div id="map" class="map-container"></div>
     <router-view />
@@ -32,7 +47,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted,provide ,watch} from 'vue';
+import { useRoute } from 'vue-router';
 import top from '@/components/Top.vue';
 import Sidebar from '@/components/Sidebar.vue';
 import AQICard from '@/components/AQICard.vue';
@@ -48,10 +64,54 @@ import Graphic from '@geoscene/core/Graphic.js';
 import Polyline from '@geoscene/core/geometry/Polyline.js';
 import Point from '@geoscene/core/geometry/Point.js';
 import FeatureLayer from '@geoscene/core/layers/FeatureLayer.js';
+//收起数据卡片
+const showAQICard = ref(true);
+const showDataCards = ref(true);
+const route = useRoute();
+// 当路由变化时收起卡片
+watch(() => route.fullPath, () => {
+  showAQICard.value = false;
+  showDataCards.value = false;
+});
+
+
 
 // 全局变量，保存 MapView 实例
 let sceneView = null;
 
+
+// 地标弹窗状态
+const activeLandmark = ref(null);
+const popupPosition = ref({ x: 0, y: 0 });
+const imgError = ref(false);
+// 在<script setup>顶部添加（替换之前的地标数据）
+const landmarkData = ref({
+  1: { name: "杭州图书馆", image: "/streetviews/hz_library.jpg" },
+  2: { name: "城北体育公园绿道", image: "/streetviews/cb_sports_park_trail.jpg" },
+  3: { name: "汉宝堡水上乐园", image: "/streetviews/hanbao_waterpark.jpg" },
+  4: { name: "城北体育公园", image: "/streetviews/cb_sports_park.jpg" },
+  5: { name: "华盛达时代中心", image: "/streetviews/huashida_center.jpg" },
+  6: { name: "时光公园", image: "/streetviews/time_park.jpg" },
+  7: { name: "石桥河", image: "/streetviews/stone_bridge_river.jpg" },
+  8: { name: "石桥河绿道", image: "/streetviews/stone_bridge_trail.jpg" },
+  9: { name: "潮王桥", image: "/streetviews/chaowang_bridge.jpg" },
+  10: { name: "京杭运河", image: "/streetviews/grand_canal.jpg" },
+  11: { name: "老德胜桥", image: "/streetviews/laodesheng_bridge.jpg" },
+  12: { name: "朝晖桥", image: "/streetviews/zhaohui_bridge.jpg" },
+  13: { name: "蓝星球创意图书馆", image: "/streetviews/blue_planet_library.jpg" },
+  14: { name: "西湖文化广场", image: "/streetviews/westlake_culture_square.jpg" },
+  15: { name: "西湖六公园", image: "/streetviews/westlake_park6.jpg" },
+  16: { name: "庆春门", image: "/streetviews/qingchun_gate.jpg" },
+  17: { name: "浙江展览馆", image: "/streetviews/zhejiang_exhibition.jpg" },
+  18: { name: "武林广场", image: "/streetviews/wulin_square.jpg" },
+  19: { name: "杭州体育馆", image: "/streetviews/hz_gymnasium.jpg" },
+  20: { name: "城东公园", image: "/streetviews/chengdong_park.jpg" },
+  21: { name: "朝晖公园", image: "/streetviews/zhaohui_park.jpg" },
+  22: { name: "北景园生态公园", image: "/streetviews/beijing_eco_park.jpg" },
+  23: { name: "同心文化公园", image: "/streetviews/tongxin_culture_park.jpg" },
+  24: { name: "武林之星博览中心", image: "/streetviews/wulin_expo.jpg" },
+  25: { name: "浙江工业大学（朝晖校区）", image: "/streetviews/zjut_zhaohui.jpg" }
+});
 // 初始化地图
 onMounted(() => initMap());
 
@@ -66,7 +126,7 @@ function initMap() {
     });
 
     sceneView = view; // 保存实例，避免 Vue Proxy 拦截
-
+    provide('view', sceneView);
     view.when(() => {
       initLayers(view);
     }).catch(console.error);
@@ -77,6 +137,7 @@ function initMap() {
       renderer: {
         type: "unique-value",
         field: "hotspot",
+        visible: true,
         symbol: { type: "simple-line", color: [180, 180, 180, 0.7], width: 2 },
         uniqueValueInfos: [
           { value: -3, symbol: { type:"simple-line", color: "#4575B5", width: 1.2 } },
@@ -89,45 +150,62 @@ function initMap() {
         ]
       },
     });
+
     const pointLayer = new FeatureLayer({
-  url: "https://www.geosceneonline.cn/server/rest/services/Hosted/地标街景/FeatureServer",
-  title: "地标图层",
-  renderer: {
-    type: "simple",  // 使用单一符号渲染
-    symbol: {
-      type: "simple-marker",  // 点符号
-      color: "#FFFF00",     // 红色
-      size: "8px",            // 大小
-      outline: {             // 边框
-        color: "grey",
-        width: 1
-      }
-    }
-  },
-  popupTemplate: {
-      title: "地标信息",
-      content: `
-        <div class="popup-content">
-          <p>名称：{地标名}</p>
-          <div id="streetViewContainer" style="width:300px;height:200px">
-            <img id="streetViewImg" style="width:100%;display:none">
-            <p class="loading">正在加载街景...</p>
-          </div>
-        </div>
-      `,
-      actions: [{
-        title: "刷新街景",
-        id: "refresh",
-        className: "esri-icon-refresh"
-      }]
-    }
+      url: "https://www.geosceneonline.cn/server/rest/services/Hosted/地标街景/FeatureServer",
+      title: "地标图层",
+      visible: true, // 默认隐藏
+      renderer: {
+        type: "simple",
+        symbol: {
+          type: "simple-marker",
+          color: "#FFFF00",
+          size: "10px",
+          outline: { color: "grey", width: 1 }
+        }
+      },
 });
+
     map.add(roadLayer);
     map.add(pointLayer);
+
+    //弹窗
+    view.on("click", async (evt) => {
+  const hit = await view.hitTest(evt);
+  const graphic = hit.results.find(r => r.graphic.layer === pointLayer)?.graphic;
+  
+  if (graphic) {
+    const fid = graphic.attributes.fid;
+    const landmark = landmarkData.value[fid];
+    
+    if (landmark) {
+      activeLandmark.value = {
+        name: landmark.name,
+        img: landmark.image
+      };
+      
+      // 计算弹窗位置（避免超出视口）
+      const containerRect = view.container.getBoundingClientRect();
+      const maxX = window.innerWidth - 320; // 弹窗宽度320px
+      const maxY = window.innerHeight - 300; // 弹窗高度约300px
+      
+      popupPosition.value = {
+        x: Math.min(evt.screenPoint.x + containerRect.left, maxX),
+        y: Math.min(evt.screenPoint.y + containerRect.top, maxY)
+      };
+      
+      imgError.value = false;
+    }
+  } else {
+    activeLandmark.value = null;
+  }
+});
+
   } catch (error) {
     console.error('地图初始化失败:', error);
   }
 }
+
 
 
 // 路线/地标数据
@@ -198,7 +276,7 @@ async function createDibiaoLayer(idx) {
         geometry: new Point({ longitude: f.geometry.coordinates[0], latitude: f.geometry.coordinates[1] }),
         symbol: { type: "simple-marker", color: colorArr[idx], size: 10, outline: { color: "white", width: 1 } },
         attributes: f.properties,
-        popupTemplate: { title: f.properties?.地标名 || '未知地标', content: `<p>${f.properties?.地标名 || '暂无描述'}</p>` }
+        // popupTemplate: { title: f.properties?.地标名 || '未知地标', content: `<p>${f.properties?.地标名 || '暂无描述'}</p>` }
       }));
     }
   });
@@ -246,5 +324,18 @@ const onRouteSelect = async (routeId) => {
 .close-btn:hover { color: #333; height: 100%; min-height: 0; overflow: hidden; }
 .map { flex: 1; height: 100%; min-height: 0; overflow: hidden; }
 .weather-container {position: absolute;top: 110px; right: 5px;z-index: 1000; /* 确保在地图上方 */}
+.landmark-popup { 
+  position: absolute; 
+  background: white; 
+  border: 1px solid #ccc; 
+  padding: 8px; 
+  z-index: 1000; 
+  width: 320px; 
+  border-radius: 6px; 
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.landmark-popup .close-btn {
+  position: absolute; top: 4px; right: 4px; border: none; background: none; cursor: pointer; font-size: 16px;
+}
 
 </style>

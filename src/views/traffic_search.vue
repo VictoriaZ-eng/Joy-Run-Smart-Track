@@ -1,496 +1,145 @@
 <template>
-  <div class="search">
+<div class="traffic-panel">
+  <h2>交通查询</h2>
+  <p>您可以使用右侧工具栏直接圈选查询范围，
+或草绘慢跑终点位置并设置缓冲距离（如1000米范围），
+系统将自动显示该区域内的公交和地铁站点信息。</p>
   
-      <select v-model="selectedType" @change="updateLayer">
-        <option value="subway">地铁站</option>
-        <option value="bus">公交车站</option>
-      </select>
-    </div>
-    </template>
-    
-    <script setup>
-    import { inject, onMounted, onBeforeUnmount, ref, watch } from 'vue';
-    import { PointLayer, Popup } from '@antv/l7';
-    import request from '@/util/request'; 
-    
-  //地铁站的geojson(比较长故折叠)
-    const subwayData = {
-    "type": "FeatureCollection",
-    "features": [
-      {
-        "type": "Feature",
-        "id": 0,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [120.162887, 30.263779]
-        },
-        "properties": {
-          "FID": 0,
-          "name": "凤起路",
-          "lng": 120.162887,
-          "lat": 30.263779,
-          "address": "地铁1号线;地铁2号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 1,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [120.179584, 30.321168]
-        },
-        "properties": {
-          "FID": 1,
-          "name": "新天地街",
-          "lng": 120.179584,
-          "lat": 30.321168,
-          "address": "地铁3号线;地铁4号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 2,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.188317,
-            30.334899
-          ]
-        },
-        "properties": {
-          "FID": 2,
-          "name": "汽轮广场",
-          "lng": 120.188317,
-          "lat": 30.334899,
-          "address": "地铁3号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 3,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.150223,
-            30.280146
-          ]
-        },
-        "properties": {
-          "FID": 3,
-          "name": "沈塘桥",
-          "lng": 120.150223,
-          "lat": 30.280146,
-          "address": "地铁2号线;地铁19号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 4,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.172197,
-            30.330407
-          ]
-        },
-        "properties": {
-          "FID": 4,
-          "name": "皋亭坝",
-          "lng": 120.172197,
-          "lat": 30.330407,
-          "address": "地铁4号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 5,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.160651,
-            30.317478
-          ]
-        },
-        "properties": {
-          "FID": 5,
-          "name": "善贤",
-          "lng": 120.160651,
-          "lat": 30.317478,
-          "address": "地铁3号线;地铁5号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 6,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.155365,
-            30.269668
-          ]
-        },
-        "properties": {
-          "FID": 6,
-          "name": "武林门",
-          "lng": 120.155365,
-          "lat": 30.269668,
-          "address": "地铁2号线;地铁3号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 7,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.164052,
-            30.254642
-          ]
-        },
-        "properties": {
-          "FID": 7,
-          "name": "龙翔桥",
-          "lng": 120.164052,
-          "lat": 30.254642,
-          "address": "地铁1号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 8,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.178545,
-            30.341489
-          ]
-        },
-        "properties": {
-          "FID": 8,
-          "name": "桃源街",
-          "lng": 120.178545,
-          "lat": 30.341489,
-          "address": "地铁4号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 9,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.169934,
-            30.31603
-          ]
-        },
-        "properties": {
-          "FID": 9,
-          "name": "西文街",
-          "lng": 120.169934,
-          "lat": 30.31603,
-          "address": "地铁5号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 10,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.175849,
-            30.308325
-          ]
-        },
-        "properties": {
-          "FID": 10,
-          "name": "东新园",
-          "lng": 120.175849,
-          "lat": 30.308325,
-          "address": "地铁5号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 11,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.178913,
-            30.295539
-          ]
-        },
-        "properties": {
-          "FID": 11,
-          "name": "杭氧",
-          "lng": 120.178913,
-          "lat": 30.295539,
-          "address": "地铁5号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 12,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.158795,
-            30.290314
-          ]
-        },
-        "properties": {
-          "FID": 12,
-          "name": "潮王路",
-          "lng": 120.158795,
-          "lat": 30.290314,
-          "address": "地铁3号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 13,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.165639,
-            30.279585
-          ]
-        },
-        "properties": {
-          "FID": 13,
-          "name": "西湖文化广场",
-          "lng": 120.165639,
-          "lat": 30.279585,
-          "address": "地铁1号线;地铁3号线;地铁19号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 14,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.164324,
-            30.272368
-          ]
-        },
-        "properties": {
-          "FID": 14,
-          "name": "武林广场",
-          "lng": 120.164324,
-          "lat": 30.272368,
-          "address": "地铁1号线;地铁3号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 15,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.172436,
-            30.264596
-          ]
-        },
-        "properties": {
-          "FID": 15,
-          "name": "中河北路",
-          "lng": 120.172436,
-          "lat": 30.264596,
-          "address": "地铁2号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 16,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.179868,
-            30.271799
-          ]
-        },
-        "properties": {
-          "FID": 16,
-          "name": "宝善桥",
-          "lng": 120.179868,
-          "lat": 30.271799,
-          "address": "地铁5号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 17,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.204384,
-            30.34005
-          ]
-        },
-        "properties": {
-          "FID": 17,
-          "name": "华丰路",
-          "lng": 120.204384,
-          "lat": 30.34005,
-          "address": "地铁3号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 18,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.200064,
-            30.323978
-          ]
-        },
-        "properties": {
-          "FID": 18,
-          "name": "华中南路",
-          "lng": 120.200064,
-          "lat": 30.323978,
-          "address": "地铁4号线"
-        }
-      },
-      {
-        "type": "Feature",
-        "id": 19,
-        "geometry": {
-          "type": "Point",
-          "coordinates": [
-            120.180761,
-            30.264552
-          ]
-        },
-        "properties": {
-          "FID": 19,
-          "name": "建国北路",
-          "lng": 120.180761,
-          "lat": 30.264552,
-          "address": "地铁2号线;地铁5号线"
-        }
-      }
-    ]
-  }
-    
-  // 公交站数据（将通过API获取GeoJSON）
-  const busData = ref(null);
-  const selectedType = ref('subway');
-  const scene = inject('scene');
-  const currentLayer = ref(null);
-  
-  // 加载公交站数据（直接使用GeoJSON格式）
-  async function loadBusData() {
-    try {
-      const response = await request.getbus();
-      // 假设API直接返回GeoJSON格式
-      busData.value = response.data || response;
-      
-      // 验证数据格式
-      if (!busData.value?.type === 'FeatureCollection') {
-        throw new Error('公交数据必须为GeoJSON格式');
-      }
-    } catch (error) {
-      console.error('加载公交数据失败:', error);
-    }
-  }
-  
-  // 通用弹窗内容生成
-  function generatePopupContent(props) {
-    return `
-      <b>站点名称:</b> ${props.sname || props.name}<br>
-      <b>线路信息:</b> ${props.address || '暂无'}<br>
-    `;
-  }
-  
-  // 创建图层（统一处理GeoJSON数据）
-  function createLayer(data, color) {
-    const layer = new PointLayer()
-      .source(data, { parser: { type: "geojson" } })
-      .shape("circle")
-      .size(8)
-      .color(color)
-      .style({ opacity: 0.9 });
+  <label for="bufferRadius">您期望的缓冲距离（米）：</label>
+  <input id="bufferRadius" type="number" v-model.number="bufferRadius" min="100" step="100" />
+</div>
+</template>
 
-  
-    layer.on('click', (e) => {
-      new Popup()
-        .setLnglat(e.lngLat)
-        .setHTML(generatePopupContent(e.feature.properties))
-        .addTo(scene.value);
-    });
-  
-    return layer;
-  }
-  
-  // 更新图层显示
-  function updateLayer() {
-    if (!scene.value) return;
-  
-    // 移除旧图层
-    if (currentLayer.value) {
-      scene.value.removeLayer(currentLayer.value);
-    }
-  
-    // 添加新图层
-    if (selectedType.value === 'subway') {
-      currentLayer.value = createLayer(subwayData, '#FF0000');
-    } else if (busData.value) {
-      currentLayer.value = createLayer(busData.value, '#1890FF');
-    }
-  
-    if (currentLayer.value) {
-      scene.value.addLayer(currentLayer.value);
-    }
-  }
-  
-  onMounted(async () => {
-    // 预加载公交数据
-    await loadBusData();
-  
-    // 监听scene初始化
-    if (scene.value) {
-      updateLayer();
-    } else {
-      const stop = watch(scene, (newScene) => {
-        if (newScene) {
-          updateLayer();
-          stop();
+<script setup>
+import { inject, onMounted } from "vue";
+import FeatureLayer from "@geoscene/core/layers/FeatureLayer.js";
+import GraphicsLayer from "@geoscene/core/layers/GraphicsLayer.js";
+import Sketch from "@geoscene/core/widgets/Sketch.js";
+import * as geometryEngine from "@geoscene/core/geometry/geometryEngine.js";
+import { ref } from "vue";
+
+const bufferRadius = ref(1000); // 默认 1000 米
+
+const view = inject("view");
+
+onMounted(() => {
+  if (!view) return;
+
+  // 两个交通点图层（公交站 & 地铁站）
+  const busLayer = new FeatureLayer({
+    url: "https://www.geosceneonline.cn/server/rest/services/Hosted/拱墅公交站/FeatureServer",
+    title: "公交站点",
+    outFields: ["*"],
+    visible:false
+  });
+  const subwayLayer = new FeatureLayer({
+    url: "https://www.geosceneonline.cn/server/rest/services/Hosted/拱墅地铁站/FeatureServer",
+    title: "地铁站点",
+    outFields: ["*"],
+    visible: false
+  });
+  view.map.addMany([busLayer, subwayLayer]);
+
+  // 草图图层
+  const sketchLayer = new GraphicsLayer();
+  view.map.add(sketchLayer);
+  // 显示结果的 GraphicsLayer
+  const resultLayer = new GraphicsLayer({ title: "交通结果" });
+  view.map.add(resultLayer);
+
+  const sketch = new Sketch({
+    layer: sketchLayer,
+    view,
+    creationMode: "update"
+  });
+  view.ui.add(sketch, "top-right");
+
+  // 查询函数
+  async function queryAndShow(layer, geometry, symbol) {
+    const query = layer.createQuery();
+    query.geometry = geometry;
+    query.spatialRelationship = "intersects";
+    query.returnGeometry = true;
+    query.outFields = ["*"];
+
+    const results = await layer.queryFeatures(query);
+
+    return results.features.map(f => {
+      return {
+        geometry: f.geometry,
+        attributes: f.attributes,
+        symbol: symbol,
+        popupTemplate: layer.title === "公交站点" ? {
+          title: "{sname}",
+          content: "相关线路: {rname}"
+        } : {
+          title: "{name}",
+          content: "地铁线路: {address}"
         }
+      };
+    });
+  }
+
+  // 草图完成时
+  sketch.on("create", async (event) => {
+    if (event.state === "complete") {
+      let geometry = event.graphic.geometry;
+
+      if (geometry.type === "point") {
+  const buffer = geometryEngine.buffer(geometry, bufferRadius.value, "meters");
+  geometry = buffer;
+
+  // 在地图上显示缓冲区
+  sketchLayer.add({
+    geometry: buffer,
+    symbol: {
+      type: "simple-fill",
+      color: [0, 0, 0, 0.1],
+      outline: { color: [0, 0, 0, 0.8], width: 1 }
+    }
+  });
+}
+      // 清空旧结果
+      resultLayer.removeAll();
+
+      // 查询公交
+      const busGraphics = await queryAndShow(busLayer, geometry, {
+        type: "simple-marker",
+        style: "circle",
+        color: "#00C5FF",
+        size: 8,
+        outline: { color: "grey", width: 1 }
       });
+
+      // 查询地铁
+      const subwayGraphics = await queryAndShow(subwayLayer, geometry, {
+        type: "simple-marker",
+        style: "circle",
+        color: "#c86080",
+        size: 10,
+        outline: { color: "grey", width: 1 }
+      });
+
+      // 添加到结果图层
+      resultLayer.addMany(busGraphics.concat(subwayGraphics));
+
     }
   });
-  
-  onBeforeUnmount(() => {
-    if (scene.value && currentLayer.value) {
-      scene.value.removeLayer(currentLayer.value);
-    }
-  });
-  </script>
-  
-  <style scoped>
-  .search {
-    position: absolute;
-    top: 121px;
-    right: 20px;
-    background: rgb(235, 239, 226);
-    padding: 8px;
-    border-radius: 4px;
-    z-index: 10;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    
-  }
-  
-  .search select {
-    margin-top: 5px;
-    padding: 6px 10px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    width: 200px;
-    height:40px;
-    cursor: pointer;
-    color:rgb(97, 144, 38);
-    font-size:20px;
-  }
-  </style>
+});
+</script>
+
+<style scoped>
+.traffic-panel {
+  position: absolute;
+  top: 120px;
+  left: 50px;
+  background: rgb(235, 239, 226);
+  padding: 12px;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  z-index: 2000;
+  color:rgb(31, 52, 6);
+  width:390px;
+}
+
+</style>

@@ -5,12 +5,14 @@ from routes.racesspider import race_bp, auto_spider_race
 from flask_cors import CORS
 from routes.qweather import qweather_bp
 
+
 app = Flask(__name__)
 CORS(app)
 app.register_blueprint(weather_bp, url_prefix='/weather')
 app.register_blueprint(route_planning_bp)
 app.register_blueprint(race_bp, url_prefix='/get_races')
 app.register_blueprint(qweather_bp) 
+
 
 if __name__ == '__main__':
     try:

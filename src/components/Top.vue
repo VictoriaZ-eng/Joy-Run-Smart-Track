@@ -40,10 +40,10 @@
               </div>
             </div>
             
-            <!-- 登录按钮（中间） -->
+            <!-- 登录按钮（中间）
             <div class="login control-button">
               <el-button>登录</el-button>
-            </div>
+            </div> -->
             
             <!-- 天气组件（最左） -->
             <div class="weather control-button">
