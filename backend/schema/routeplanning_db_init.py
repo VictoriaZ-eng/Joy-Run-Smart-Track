@@ -14,7 +14,8 @@ DB_CONFIG = {
     'port': 5432,
     'database': 'joy_run_db',
     'user': 'postgres',
-    'password': 'postgres1'
+    # 'password': 'postgres1'
+    'password': 'zzq12'
 }
 
 def init_database(drop_existing=False):
@@ -210,27 +211,52 @@ def init_database(drop_existing=False):
                     logger.info(f"添加字段: {field}")
 
         # UPDATE: 5. 数据导入选项（如果表刚创建或用户选择重新导入）
+        # if not table_exists or drop_existing:
+        #     # csv_path = r'G:\gh_repo\Joy-Run-Smart-Track\backend\res\road_modified-2.csv'
+        #     csv_path = r'D:\中地校企联合实训\Yuepaozhihui\JoyRun_SmartTrack\backend\res\road_modified-2.csv'
+        #     if csv_path and csv_path != "":
+        #         logger.info(f"从CSV文件导入数据: {csv_path}")
+        #         try:
+        #             cursor.execute(f"""
+        #             COPY edgesmodified(
+        #                 fid, water, bh, shape_leng, frequency, slope, buildng, ndvi, winding, 
+        #                 sport, life, education, finance, traffic, public, scenery, food, poi, svi, gvi, vw, vei, light, poiden, origlen, bh_1, frequenc_1, 
+        #                 sum_c_intr, sum_c_buil, sum_c_ndvi, sum_c_poi, sum_c_wind, sum_c_slop, sum_c_wate, sum_c_svi, sum_c_gvi, sum_c_vw, sum_c_ligh, sum_c_poid, 
+        #                 score, startx, starty, endx, endy, total, dij_w1, distance, score_ori, dis_ori, toatl_ori1, toatl_ori2,
+        #                 poi_m, svi_m, gvi_m, vw_m, vei_m, light_m, poiden_m, slope_m, buildng_m, ndvi_m, winding_m, water_m,
+        #                 poi_mtotal, svi_mtotal, gvi_mtotal, vw_mtotal, vei_mtotal, light_mtotal, poiden_mtotal, slope_mtotal, buildng_mtotal, ndvi_mtotal, winding_mtotal, water_mtotal
+        #             ) FROM '{csv_path}' WITH CSV HEADER;
+        #             """)
+        #             logger.info("CSV数据导入成功")
+        #         except Exception as e:
+        #             logger.warning(f"CSV数据导入失败: {e}")
+        #             logger.info("跳过数据导入，继续创建表结构...")
+        #     else:
+        #         logger.info("跳过CSV数据导入")
+        # 路径必须是 Postgres 服务进程能访问的路径,所以改成客户端访问
         if not table_exists or drop_existing:
-            csv_path = r'G:\gh_repo\Joy-Run-Smart-Track\backend\res\road_modified-2.csv'
+            csv_path = r'D:\中地校企联合实训\Yuepaozhihui\JoyRun_SmartTrack\backend\res\road_modified-2.csv'
             if csv_path and csv_path != "":
                 logger.info(f"从CSV文件导入数据: {csv_path}")
                 try:
-                    cursor.execute(f"""
+                    with open(csv_path, 'r', encoding='utf-8') as f:
+                     cursor.copy_expert("""
                     COPY edgesmodified(
-                        fid, water, bh, shape_leng, frequency, slope, buildng, ndvi, winding, 
-                        sport, life, education, finance, traffic, public, scenery, food, poi, svi, gvi, vw, vei, light, poiden, origlen, bh_1, frequenc_1, 
-                        sum_c_intr, sum_c_buil, sum_c_ndvi, sum_c_poi, sum_c_wind, sum_c_slop, sum_c_wate, sum_c_svi, sum_c_gvi, sum_c_vw, sum_c_ligh, sum_c_poid, 
-                        score, startx, starty, endx, endy, total, dij_w1, distance, score_ori, dis_ori, toatl_ori1, toatl_ori2,
-                        poi_m, svi_m, gvi_m, vw_m, vei_m, light_m, poiden_m, slope_m, buildng_m, ndvi_m, winding_m, water_m,
-                        poi_mtotal, svi_mtotal, gvi_mtotal, vw_mtotal, vei_mtotal, light_mtotal, poiden_mtotal, slope_mtotal, buildng_mtotal, ndvi_mtotal, winding_mtotal, water_mtotal
-                    ) FROM '{csv_path}' WITH CSV HEADER;
-                    """)
-                    logger.info("CSV数据导入成功")
+                    fid, water, bh, shape_leng, frequency, slope, buildng, ndvi, winding, 
+                    sport, life, education, finance, traffic, public, scenery, food, poi, svi, gvi, vw, vei, light, poiden, origlen, bh_1, frequenc_1, 
+                    sum_c_intr, sum_c_buil, sum_c_ndvi, sum_c_poi, sum_c_wind, sum_c_slop, sum_c_wate, sum_c_svi, sum_c_gvi, sum_c_vw, sum_c_ligh, sum_c_poid, 
+                    score, startx, starty, endx, endy, total, dij_w1, distance, score_ori, dis_ori, toatl_ori1, toatl_ori2,
+                    poi_m, svi_m, gvi_m, vw_m, vei_m, light_m, poiden_m, slope_m, buildng_m, ndvi_m, winding_m, water_m,
+                    poi_mtotal, svi_mtotal, gvi_mtotal, vw_mtotal, vei_mtotal, light_mtotal, poiden_mtotal, slope_mtotal, buildng_mtotal, ndvi_mtotal, winding_mtotal, water_mtotal
+                ) FROM STDIN WITH CSV HEADER
+                """, f)
+                    logger.info("CSV数据导入成功（客户端方式）")
                 except Exception as e:
                     logger.warning(f"CSV数据导入失败: {e}")
                     logger.info("跳过数据导入，继续创建表结构...")
             else:
-                logger.info("跳过CSV数据导入")
+               logger.info("跳过CSV数据导入")
+
 
         # UPDATE: 6. 自动生成/更新nodesmodified表
         logger.info("自动生成/更新nodesmodified表（唯一节点集）...")

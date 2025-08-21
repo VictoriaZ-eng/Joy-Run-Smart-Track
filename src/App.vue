@@ -1,10 +1,10 @@
 <template>
   <top/>
   <div class="app-container">
-    <div class="weather-container" v-if="showAQICard">
+    <div class="weather-container" v-if="isHomePage && showAQICard">
       <AQICard/>
     </div>
-    <div v-if="showDataCards">
+    <div v-if="isHomePage && showDataCards">
       <DataCards />
     </div>
       <!-- 地标浮动弹窗 -->
@@ -47,7 +47,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted,provide ,watch} from 'vue';
+import { ref, onMounted,provide ,watch,computed} from 'vue';
 import { useRoute } from 'vue-router';
 import top from '@/components/Top.vue';
 import Sidebar from '@/components/Sidebar.vue';
@@ -64,14 +64,23 @@ import Graphic from '@geoscene/core/Graphic.js';
 import Polyline from '@geoscene/core/geometry/Polyline.js';
 import Point from '@geoscene/core/geometry/Point.js';
 import FeatureLayer from '@geoscene/core/layers/FeatureLayer.js';
+
+// 计算属性判断当前是否是首页
+const isHomePage = computed(() => route.path === '/');
 //收起数据卡片
 const showAQICard = ref(true);
 const showDataCards = ref(true);
 const route = useRoute();
-// 当路由变化时收起卡片
-watch(() => route.fullPath, () => {
-  showAQICard.value = false;
-  showDataCards.value = false;
+
+// 当路由变化时，如果是首页则显示卡片，否则隐藏
+watch(() => route.path, (newPath) => {
+  if (newPath === '/') {
+    showAQICard.value = true;
+    showDataCards.value = true;
+  } else {
+    showAQICard.value = false;
+    showDataCards.value = false;
+  }
 });
 
 
@@ -84,7 +93,7 @@ let sceneView = null;
 const activeLandmark = ref(null);
 const popupPosition = ref({ x: 0, y: 0 });
 const imgError = ref(false);
-// 在<script setup>顶部添加（替换之前的地标数据）
+
 const landmarkData = ref({
   1: { name: "杭州图书馆", image: "/streetviews/hz_library.jpg" },
   2: { name: "城北体育公园绿道", image: "/streetviews/cb_sports_park_trail.jpg" },
@@ -126,9 +135,12 @@ function initMap() {
     });
 
     sceneView = view; // 保存实例，避免 Vue Proxy 拦截
+    window.sceneView = view;
+    
     provide('view', sceneView);
     view.when(() => {
       initLayers(view);
+      initLegend(view); 
     }).catch(console.error);
 
     const roadLayer = new FeatureLayer({
@@ -204,7 +216,70 @@ function initMap() {
   } catch (error) {
     console.error('地图初始化失败:', error);
   }
+  function initLegend(view) {
+  const legendDiv = document.createElement('div');
+  legendDiv.id = "map-legend";
+  legendDiv.style.position = "absolute";
+  legendDiv.style.right = "390px";
+  legendDiv.style.bottom = "20px";
+  legendDiv.style.background = "rgba(255, 255, 255, 0.9)";
+  legendDiv.style.padding = "8px";
+  legendDiv.style.borderRadius = "6px";
+  legendDiv.style.boxShadow = "0 0 10px rgba(0,0,0,0.2)";
+  legendDiv.style.fontSize = "12px";
+  legendDiv.style.maxWidth = "200px";
+
+  // 标题 + 折叠按钮
+  const header = document.createElement('div');
+  header.style.display = "flex";
+  header.style.justifyContent = "space-between";
+  header.style.alignItems = "center";
+  header.style.cursor = "pointer";
+
+  const title = document.createElement('span');
+  title.innerText = "图例";
+  title.style.fontWeight = "bold";
+
+  const toggleBtn = document.createElement('span');
+  toggleBtn.innerText = "▼"; // 默认展开
+  toggleBtn.style.marginLeft = "5px";
+
+  header.appendChild(title);
+  header.appendChild(toggleBtn);
+  legendDiv.appendChild(header);
+
+  // 内容区域
+  const content = document.createElement('div');
+  content.style.marginTop = "5px";
+  content.innerHTML = `
+    <div style="font-weight:bold; margin-bottom:3px;">路网图层</div>
+    <div><span style="display:inline-block;width:20px;height:3px;background:#4575B5;margin-right:5px;"></span>置信度为99%的慢跑冷点</div>
+    <div><span style="display:inline-block;width:20px;height:3px;background:#849EBA;margin-right:5px;"></span>置信度为95%的慢跑冷点</div>
+    <div><span style="display:inline-block;width:20px;height:3px;background:#C0CCBE;margin-right:5px;"></span>置信度为90%的慢跑冷点</div>
+    <div><span style="display:inline-block;width:20px;height:3px;background:#9C9C9C;margin-right:5px;"></span>不具有显著性</div>
+    <div><span style="display:inline-block;width:20px;height:3px;background:#FAB984;margin-right:5px;"></span>置信度为90%的慢跑热点</div>
+    <div><span style="display:inline-block;width:20px;height:3px;background:#ED7551;margin-right:5px;"></span>置信度为95%的慢跑热点</div>
+    <div><span style="display:inline-block;width:20px;height:3px;background:#D62F27;margin-right:5px;"></span>置信度为99%的慢跑热点</div>
+
+    <div style="font-weight:bold; margin:8px 0 3px;">地标图层</div>
+    <div><span style="display:inline-block;width:10px;height:10px;background:#FFFF00;margin-right:5px;border:1px solid grey;"></span> 地标</div>
+  `;
+  legendDiv.appendChild(content);
+
+  // 点击折叠/展开
+  let collapsed = false;
+  header.addEventListener('click', () => {
+    collapsed = !collapsed;
+    content.style.display = collapsed ? 'none' : 'block';
+    toggleBtn.innerText = collapsed ? "▲" : "▼";
+  });
+
+  view.container.appendChild(legendDiv);
 }
+
+}
+  
+
 
 
 

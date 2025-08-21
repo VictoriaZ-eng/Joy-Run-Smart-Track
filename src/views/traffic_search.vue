@@ -11,122 +11,136 @@
 </template>
 
 <script setup>
-import { inject, onMounted } from "vue";
+import { inject, onMounted, onBeforeUnmount, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import FeatureLayer from "@geoscene/core/layers/FeatureLayer.js";
 import GraphicsLayer from "@geoscene/core/layers/GraphicsLayer.js";
 import Sketch from "@geoscene/core/widgets/Sketch.js";
 import * as geometryEngine from "@geoscene/core/geometry/geometryEngine.js";
-import { ref } from "vue";
 
-const bufferRadius = ref(1000); // 默认 1000 米
-
+const bufferRadius = ref(1000);
 const view = inject("view");
+const route = useRoute();
+
+let sketchLayer = null;
+let sketch = null;
+let resultLayer = null;
+
+// 草图工具栏只显示一次
+function addSketchUI() {
+  if (sketch && view) {
+    view.ui.add(sketch, "top-right");
+  }
+}
+
+// 草图工具栏移除
+function removeSketchUI() {
+  if (sketch && view) {
+    view.ui.remove(sketch);
+  }
+}
 
 onMounted(() => {
   if (!view) return;
 
-  // 两个交通点图层（公交站 & 地铁站）
+  if (!sketchLayer) {
+    sketchLayer = new GraphicsLayer();
+    view.map.add(sketchLayer);
+  }
+
+  if (!resultLayer) {
+    resultLayer = new GraphicsLayer({ title: "交通结果" });
+    view.map.add(resultLayer);
+  }
+
   const busLayer = new FeatureLayer({
     url: "https://www.geosceneonline.cn/server/rest/services/Hosted/拱墅公交站/FeatureServer",
     title: "公交站点",
     outFields: ["*"],
-    visible:false
+    visible: false
   });
+
   const subwayLayer = new FeatureLayer({
     url: "https://www.geosceneonline.cn/server/rest/services/Hosted/拱墅地铁站/FeatureServer",
     title: "地铁站点",
     outFields: ["*"],
     visible: false
   });
+
   view.map.addMany([busLayer, subwayLayer]);
 
-  // 草图图层
-  const sketchLayer = new GraphicsLayer();
-  view.map.add(sketchLayer);
-  // 显示结果的 GraphicsLayer
-  const resultLayer = new GraphicsLayer({ title: "交通结果" });
-  view.map.add(resultLayer);
-
-  const sketch = new Sketch({
-    layer: sketchLayer,
-    view,
-    creationMode: "update"
-  });
-  view.ui.add(sketch, "top-right");
-
-  // 查询函数
-  async function queryAndShow(layer, geometry, symbol) {
-    const query = layer.createQuery();
-    query.geometry = geometry;
-    query.spatialRelationship = "intersects";
-    query.returnGeometry = true;
-    query.outFields = ["*"];
-
-    const results = await layer.queryFeatures(query);
-
-    return results.features.map(f => {
-      return {
-        geometry: f.geometry,
-        attributes: f.attributes,
-        symbol: symbol,
-        popupTemplate: layer.title === "公交站点" ? {
-          title: "{sname}",
-          content: "相关线路: {rname}"
-        } : {
-          title: "{name}",
-          content: "地铁线路: {address}"
-        }
-      };
+  if (!sketch) {
+    sketch = new Sketch({
+      layer: sketchLayer,
+      view,
+      creationMode: "update"
     });
-  }
 
-  // 草图完成时
-  sketch.on("create", async (event) => {
-    if (event.state === "complete") {
+    sketch.on("create", async (event) => {
+      if (event.state !== "complete") return;
       let geometry = event.graphic.geometry;
 
       if (geometry.type === "point") {
-  const buffer = geometryEngine.buffer(geometry, bufferRadius.value, "meters");
-  geometry = buffer;
+        const buffer = geometryEngine.buffer(geometry, bufferRadius.value, "meters");
+        geometry = buffer;
 
-  // 在地图上显示缓冲区
-  sketchLayer.add({
-    geometry: buffer,
-    symbol: {
-      type: "simple-fill",
-      color: [0, 0, 0, 0.1],
-      outline: { color: [0, 0, 0, 0.8], width: 1 }
-    }
-  });
-}
-      // 清空旧结果
+        sketchLayer.add({
+          geometry: buffer,
+          symbol: {
+            type: "simple-fill",
+            color: [0, 0, 0, 0.1],
+            outline: { color: [0, 0, 0, 0.8], width: 1 }
+          }
+        });
+      }
+
       resultLayer.removeAll();
 
-      // 查询公交
+      const queryAndShow = async (layer, geometry, symbol) => {
+        const query = layer.createQuery();
+        query.geometry = geometry;
+        query.spatialRelationship = "intersects";
+        query.returnGeometry = true;
+        query.outFields = ["*"];
+        const results = await layer.queryFeatures(query);
+
+        return results.features.map(f => ({
+          geometry: f.geometry,
+          attributes: f.attributes,
+          symbol,
+          popupTemplate: layer.title === "公交站点"
+            ? { title: "{sname}", content: "相关线路: {rname}" }
+            : { title: "{name}", content: "地铁线路: {address}" }
+        }));
+      };
+
       const busGraphics = await queryAndShow(busLayer, geometry, {
-        type: "simple-marker",
-        style: "circle",
-        color: "#00C5FF",
-        size: 8,
-        outline: { color: "grey", width: 1 }
+        type: "simple-marker", style: "circle", color: "#00C5FF", size: 8, outline: { color: "grey", width: 1 }
       });
 
-      // 查询地铁
       const subwayGraphics = await queryAndShow(subwayLayer, geometry, {
-        type: "simple-marker",
-        style: "circle",
-        color: "#c86080",
-        size: 10,
-        outline: { color: "grey", width: 1 }
+        type: "simple-marker", style: "circle", color: "#c86080", size: 10, outline: { color: "grey", width: 1 }
       });
 
-      // 添加到结果图层
       resultLayer.addMany(busGraphics.concat(subwayGraphics));
+    });
+  }
 
-    }
+  // 初次进入路由显示 Sketch
+  if (route.name === "Traffic_search") addSketchUI();
+
+  // 监听路由变化
+  watch(() => route.fullPath, (newPath) => {
+    if (route.name === "Traffic_search") addSketchUI();
+    else removeSketchUI();
   });
 });
+
+onBeforeUnmount(() => {
+  removeSketchUI();
+});
 </script>
+
 
 <style scoped>
 .traffic-panel {

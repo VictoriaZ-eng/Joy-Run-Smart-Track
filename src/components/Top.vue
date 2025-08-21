@@ -40,10 +40,10 @@
               </div>
             </div>
             
-            <!-- 登录按钮（中间）
+            <!-- 登录按钮（中间）改成回到首页 -->
             <div class="login control-button">
-              <el-button>登录</el-button>
-            </div> -->
+              <el-button @click="goToHome">首页</el-button>
+            </div>
             
             <!-- 天气组件（最左） -->
             <div class="weather control-button">
@@ -92,7 +92,11 @@ const handleClick = (item) => {
   activeItem.value = item.name;
   router.push(item.path); // Vue Router 路由跳转
 };
-
+// 返回首页的函数
+const goToHome = () => {
+  activeItem.value = ''; // 清空当前选中项
+  router.push('/'); // 跳转到首页
+};
 // 时间
 const date = ref();
 const clock = ref();

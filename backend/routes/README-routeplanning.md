@@ -131,7 +131,7 @@ routeplanning.py
 
 ### 1. 初始化数据库
 
-- 使用schema中的`db_init.py`进行路网表的初始化，代码中需要标注res中个人的road_modified.csv路径。
+- 使用schema中的routeplanning_db_init.py`进行路网表的初始化，代码中需要标注res中个人的road_modified.csv路径。
 
 ```sql
 # 导入边表数据（如有CSV）

@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 DB_CONFIG = {
     'host': 'localhost',
     'port': 5432,
-    # 'database': 'joy_run_db',
-    'database': 'postgres',
+    'database': 'joy_run_db',
+    # 'database': 'postgres',
     'user': 'postgres',
     # 'password': 'postgres1'
     'password': 'zzq12'   
@@ -1266,7 +1266,8 @@ try:
                 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config.yaml'))
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = yaml.safe_load(f)
-                temp_folder = config.get('route_planning_temp_folder', 'G:/gh_repo/Joy-Run-Smart-Track/backend/temp')
+                    # 'G:/gh_repo/Joy-Run-Smart-Track/backend/temp'
+                temp_folder = config.get('route_planning_temp_folder', 'D:\中地校企联合实训\Yuepaozhihui\JoyRun_SmartTrack\backend\temp')
                 
                 # 获取最近5分钟内生成的路径文件
                 current_time = time.time()
@@ -1288,6 +1289,22 @@ try:
                     filename = f'route_generated_{timestamp}.json'
                     filepath = os.path.join(temp_folder, filename)
                 
+                # return jsonify({
+                #     'success': True,
+                #     'filename': filename,
+                #     'filepath': filepath,
+                #     'route_info': {
+                #         'total_distance': result['total_distance'],
+                #         'total_segments': result['total_segments'],
+                #         'optimization_ratio': result['optimization_ratio'],
+                #         'score_per_meter': result['score_per_meter'],
+                #         'score_per_segment': result['score_per_segment']
+                #     }
+                # })
+                # 假设 latest_file 是生成的 GeoJSON 文件路径
+                with open(latest_file, 'r', encoding='utf-8') as f:
+                    geojson_data = json.load(f)
+
                 return jsonify({
                     'success': True,
                     'filename': filename,
@@ -1298,7 +1315,8 @@ try:
                         'optimization_ratio': result['optimization_ratio'],
                         'score_per_meter': result['score_per_meter'],
                         'score_per_segment': result['score_per_segment']
-                    }
+                    },
+                    'geojson': geojson_data   # 直接把路径几何数据返回给前端
                 })
             else:
                 return jsonify({
