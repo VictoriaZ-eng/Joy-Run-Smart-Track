@@ -934,7 +934,7 @@ class JoggingPathPlanner:
             logger.info(f"GeoJSON 路径已保存到: {geojson_path}")
         except Exception as e:
             logger.error(f"保存GeoJSON失败: {e}")
-
+    
         # UPDATE: 返回结果包含动态约束信息
         result = RouteResult(
             path_nodes=path_nodes,
@@ -1132,7 +1132,7 @@ try:
     
     # 创建蓝图
     route_planning_bp = Blueprint('route_planning', __name__)
-    
+   
     @route_planning_bp.route('/api/get_routes', methods=['POST'])
     def get_routes():
         """
@@ -1314,7 +1314,7 @@ try:
                         'total_segments': result['total_segments'],
                         'optimization_ratio': result['optimization_ratio'],
                         'score_per_meter': result['score_per_meter'],
-                        'score_per_segment': result['score_per_segment']
+                        'score_per_segment': result['score_per_segment'],
                     },
                     'geojson': geojson_data   # 直接把路径几何数据返回给前端
                 })

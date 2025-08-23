@@ -136,7 +136,7 @@ function initMap() {
 
     sceneView = view; // 保存实例，避免 Vue Proxy 拦截
     window.sceneView = view;
-    
+
     provide('view', sceneView);
     view.when(() => {
       initLayers(view);
