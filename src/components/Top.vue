@@ -1,3 +1,4 @@
+<!-- 顶部导航栏组件代码 -->
 <template>
   <div class="top-container">
     <!-- 头部导航栏 -->

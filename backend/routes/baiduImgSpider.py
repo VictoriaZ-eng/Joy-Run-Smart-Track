@@ -1,3 +1,4 @@
+# 百度街景爬取代码，项目未使用
 import requests
 import json
 from PIL import Image

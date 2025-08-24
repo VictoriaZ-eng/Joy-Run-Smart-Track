@@ -1,3 +1,4 @@
+<!-- 侧边栏推荐路线组件代码 -->
 <template>
   <div class="sidebar" :class="{ collapsed }">
     <button class="toggle" @click="collapsed = !collapsed">

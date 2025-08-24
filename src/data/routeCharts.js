@@ -1,5 +1,4 @@
-
-
+// 推荐路线图表数据
 // 为每条路线定义图表数据
 export const routeCharts = {
   route1: {

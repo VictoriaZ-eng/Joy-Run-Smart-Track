@@ -1,3 +1,4 @@
+# 实时空气质量相关代码(和风天气api)
 from flask import Blueprint, jsonify
 import requests
 from datetime import datetime

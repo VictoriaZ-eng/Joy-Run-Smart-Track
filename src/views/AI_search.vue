@@ -1,3 +1,4 @@
+<!-- AI健康助手功能 -->
 <template>
 
 </template>

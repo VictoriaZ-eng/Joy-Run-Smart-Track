@@ -1,3 +1,4 @@
+<!-- 实时天气代码 -->
 <template>
   <div class="weather-main" style="position:relative;">
     <div class="weather-info"

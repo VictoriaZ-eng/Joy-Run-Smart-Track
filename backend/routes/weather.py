@@ -1,3 +1,4 @@
+# 实时天气相关代码（高德api)
 import requests
 from datetime import datetime, timedelta
 from flask import Blueprint

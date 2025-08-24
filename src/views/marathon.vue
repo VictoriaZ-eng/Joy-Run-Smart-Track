@@ -1,3 +1,4 @@
+<!-- 赛事查询功能 -->
 <template>
   <div class="marathon-card">
     <div class="marathon-content" ref="marathonContent">

@@ -1,3 +1,4 @@
+<!-- 原Mapbox框架下地点查询代码，现对项目无用，可忽略 -->
 <script setup>
 import { inject, ref, watch } from 'vue';
 import mapboxgl from 'mapbox-gl';

@@ -1,3 +1,5 @@
+# 本代码实现马拉松赛事信息爬虫
+# 请在修改12-19行代码为自己数据库信息，第29行代码需要修改为自己的config.yaml路径.第183行代码改为自己temp文件夹路径
 import os
 import time
 import yaml

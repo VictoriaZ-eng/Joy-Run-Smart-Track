@@ -1,3 +1,4 @@
+<!-- 侧边栏推荐路线数据可视化代码 -->
 <template>
     <div ref="chartContainer" class="route-chart"></div>
   </template>

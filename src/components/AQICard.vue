@@ -1,3 +1,4 @@
+<!-- 实时空气质量前端代码 -->
 <template>
     <div v-if="visible" class="aqi-card">
       <button class="close-btn" @click="closeCard">×</button>

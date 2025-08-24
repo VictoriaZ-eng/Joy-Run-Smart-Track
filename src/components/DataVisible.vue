@@ -1,3 +1,4 @@
+<!-- 首页“一张图”数据可视化代码 -->
 <template>
     <!-- 建成环境变量数据卡片（左侧） -->
     <div class="built-env-card" v-show="showBuiltEnv">

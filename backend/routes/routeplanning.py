@@ -1,3 +1,5 @@
+# 个性化慢跑路线核心功能代码
+# 修改19-27行代码为自己的数据库信息，第1272行改为自己的temp文件夹路径
 import psycopg2
 import numpy as np
 from typing import Tuple, List, Dict, Optional, Union
